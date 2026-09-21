@@ -1,19 +1,20 @@
-# firelite-cloudserver
+# hako-cloudserver
 
-Standalone [FireLite](https://github.com/rizaptk/firelite) cloud-sync hub
+Standalone HakoDB cloud-sync hub
 with admin console: room-scoped document sync over WebSocket, group/user
 credential stores, and an HTTP admin API + UI.
 
 ## Builtin server plane
 
-The room registry (`__firelite_rooms`) and the credential stores
+The room registry (`__hako_rooms`, plus the pre-rebrand `__firelite_rooms`
+alias) and the credential stores
 (`__users`, `__groups`) are declared sync-excluded in the server config —
 they never replicate to clients, by exact name rather than by naming
 convention.
 
 ## Compatibility
 
-| firelite-cloudserver | firelite core |
+| hako-cloudserver | hako core |
 |---|---|
 | 0.1.1 | `cloud_sync` branch (pre-crates.io) |
 
@@ -24,7 +25,7 @@ cargo build --release
 cargo test
 ```
 
-The `firelite` dependency tracks the core `cloud_sync` branch until the
+The `hakodb` dependency tracks the core `cloud_sync` branch until the
 first crates.io release, then pins to `version = "0.8"`.
 
 ## Run
@@ -33,20 +34,22 @@ A room-agnostic sync hub plus an admin web console (no JS framework —
 embedded HTML + SSE), in one process, two ports.
 
 ```bash
-firelite-cloudserver \
-  --db-path /var/lib/firelite-cloud/db \
+hako-cloudserver \
+  --db-path /var/lib/hako-cloud/db \
   --admin-bind 127.0.0.1:8081 \
   --sync-bind 0.0.0.0:8080
 ```
 
 Configuration layers (lowest wins last): compiled defaults <
-`./firelite-cloud.toml` (auto-loaded when present) < `FL_*` env
-(`FL_DB_PATH`, `FL_ADMIN_BIND`, `FL_SYNC_BIND`, `FL_LOG_LEVEL`,
-`FL_SECURE_COOKIES=1`, `FL_SERVER_ID`, `FL_SYNC_TOKEN`, `FL_TLS_CERT`,
-`FL_TLS_KEY`) < CLI flags. A minimal TOML:
+`./hako-cloud.toml` (auto-loaded when present; legacy
+`./firelite-cloud.toml` still honored) < `HK_*` env
+(`HK_DB_PATH`, `HK_ADMIN_BIND`, `HK_SYNC_BIND`, `HK_LOG_LEVEL`,
+`HK_SECURE_COOKIES=1`, `HK_SERVER_ID`, `HK_SYNC_TOKEN`, `HK_TLS_CERT`,
+`HK_TLS_KEY`; pre-rebrand `FL_*` spellings still work as fallback) <
+CLI flags. A minimal TOML:
 
 ```toml
-db_path = "/var/lib/firelite-cloud/db"
+db_path = "/var/lib/hako-cloud/db"
 admin_bind = "127.0.0.1:8081"
 sync_bind = "0.0.0.0:8080"
 log_level = "info"
@@ -84,7 +87,7 @@ The sync plane stays `ws://` behind a reverse proxy, or terminate there
 too — both are documented deployments. Refusing to start with only half
 the TLS pair is deliberate (fail-closed).
 
-- Linux: `contrib/firelite-cloudserver.service` (hardened
+- Linux: `contrib/hako-cloudserver.service` (hardened
   systemd unit — `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`,
   `ReadWritePaths` scoped to the DB dir).
 - Windows: `--install-service [--service-name NAME]` (requires absolute
