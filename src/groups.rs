@@ -8,10 +8,10 @@
 //! Plaintexts keys exist only in the create/rotate response (shown once);
 //! only SHA-256 hashes persist (see `hash_api_key`).
 
-use firelite::cloud_sync::hash_api_key;
-use firelite::document::firelite_doc::FireLiteDoc;
-use firelite::document::value::Value;
-use firelite::engine::FireLite;
+use hakodb::cloud_sync::hash_api_key;
+use hakodb::document::hako_doc::HakoDoc;
+use hakodb::document::value::Value;
+use hakodb::engine::Hako;
 use serde::{Deserialize, Serialize};
 
 pub const GROUPS_COLLECTION: &str = "__groups";
@@ -56,7 +56,7 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn get_str(doc: &FireLiteDoc, field: &str) -> Option<String> {
+fn get_str(doc: &HakoDoc, field: &str) -> Option<String> {
     match doc.get(field) {
         Some(Value::String(s)) => Some(s.clone()),
         _ => None,
@@ -68,7 +68,7 @@ fn valid_room_name(name: &str) -> bool {
     !n.is_empty() && n.len() <= 64
 }
 
-pub fn get_group(db: &FireLite, room_name: &str) -> Option<GroupView> {
+pub fn get_group(db: &Hako, room_name: &str) -> Option<GroupView> {
     let doc = db.get(GROUPS_COLLECTION, room_name).ok()??;
     let mode = doc
         .get("mode")
@@ -101,8 +101,8 @@ pub fn get_group(db: &FireLite, room_name: &str) -> Option<GroupView> {
     })
 }
 
-pub fn list_groups(db: &FireLite) -> Vec<GroupView> {
-    let rows = match db.query(firelite::query::query::Query::new(GROUPS_COLLECTION)) {
+pub fn list_groups(db: &Hako) -> Vec<GroupView> {
+    let rows = match db.query(hakodb::query::query::Query::new(GROUPS_COLLECTION)) {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
@@ -115,14 +115,14 @@ pub fn list_groups(db: &FireLite) -> Vec<GroupView> {
 }
 
 fn write_group(
-    db: &FireLite,
+    db: &Hako,
     room_name: &str,
     mode: GroupMode,
     key_hash: Option<String>,
     members: Vec<String>,
     created_at: i64,
 ) -> Result<(), String> {
-    let mut doc = FireLiteDoc::default();
+    let mut doc = HakoDoc::default();
     doc.insert("mode", Value::String(mode.as_str().to_string()));
     if let Some(h) = key_hash {
         doc.insert("api_key_hash", Value::String(h));
@@ -140,7 +140,7 @@ fn write_group(
 /// Create a group. Returns the plaintext API key exactly once (for
 /// `registered`; `None` for `open`).
 pub fn create_group(
-    db: &FireLite,
+    db: &Hako,
     room_name: &str,
     mode: GroupMode,
     new_key: impl FnOnce() -> String,
@@ -164,7 +164,7 @@ pub fn create_group(
 
 /// Rotate a registered group's key. Returns the new plaintext once.
 pub fn rotate_group_key(
-    db: &FireLite,
+    db: &Hako,
     room_name: &str,
     new_key: impl FnOnce() -> String,
 ) -> Result<String, String> {
@@ -184,7 +184,7 @@ pub fn rotate_group_key(
     Ok(k)
 }
 
-pub fn set_group_mode(db: &FireLite, room_name: &str, mode: GroupMode) -> Result<GroupView, String> {
+pub fn set_group_mode(db: &Hako, room_name: &str, mode: GroupMode) -> Result<GroupView, String> {
     let g = get_group(db, room_name).ok_or("unknown group")?;
     // Switching to open drops the key hash (no stale secrets lingering).
     let key_hash = match mode {
@@ -199,7 +199,7 @@ pub fn set_group_mode(db: &FireLite, room_name: &str, mode: GroupMode) -> Result
     get_group(db, room_name).ok_or("unreachable".into())
 }
 
-pub fn add_member(db: &FireLite, room_name: &str, client_id: &str) -> Result<GroupView, String> {
+pub fn add_member(db: &Hako, room_name: &str, client_id: &str) -> Result<GroupView, String> {
     let g = get_group(db, room_name).ok_or("unknown group")?;
     let client_id = client_id.trim();
     if client_id.is_empty() || client_id.len() > 64 {
@@ -218,7 +218,7 @@ pub fn add_member(db: &FireLite, room_name: &str, client_id: &str) -> Result<Gro
     get_group(db, room_name).ok_or("unreachable".into())
 }
 
-pub fn remove_member(db: &FireLite, room_name: &str, client_id: &str) -> Result<GroupView, String> {
+pub fn remove_member(db: &Hako, room_name: &str, client_id: &str) -> Result<GroupView, String> {
     let g = get_group(db, room_name).ok_or("unknown group")?;
     let members: Vec<String> = g.members.into_iter().filter(|m| m != client_id).collect();
     let key_hash = db
@@ -230,7 +230,7 @@ pub fn remove_member(db: &FireLite, room_name: &str, client_id: &str) -> Result<
     get_group(db, room_name).ok_or("unreachable".into())
 }
 
-pub fn delete_group(db: &FireLite, room_name: &str) -> Result<(), String> {
+pub fn delete_group(db: &Hako, room_name: &str) -> Result<(), String> {
     if get_group(db, room_name).is_none() {
         return Err("unknown group".into());
     }
@@ -242,9 +242,9 @@ pub fn delete_group(db: &FireLite, room_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use firelite::config::{DurabilityMode, FireLiteConfig};
+    use hakodb::config::{DurabilityMode, HakoConfig};
 
-    fn temp_db() -> (FireLite, std::path::PathBuf) {
+    fn temp_db() -> (Hako, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "fl-cs-groups-{}",
             std::time::SystemTime::now()
@@ -252,9 +252,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mut cfg = FireLiteConfig::default();
+        let mut cfg = HakoConfig::default();
         cfg.durability_mode = DurabilityMode::Manual;
-        (FireLite::open(&dir, cfg).unwrap(), dir)
+        (Hako::open(&dir, cfg).unwrap(), dir)
     }
 
     fn keygen() -> String {

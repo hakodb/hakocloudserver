@@ -1,14 +1,14 @@
 //! Data-plane endpoint tests: role gates, CRUD, query, batch, indexes,
 //! maintenance. Raw HTTP over ephemeral ports, no client dependencies.
 
-use firelite::config::{DurabilityMode, FireLiteConfig};
-use firelite::engine::FireLite;
+use hakodb::config::{DurabilityMode, HakoConfig};
+use hakodb::engine::Hako;
 use firelite_cloudserver::app::{build_router, AppState};
 use firelite_cloudserver::auth::{upsert_user, Role};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn temp_db() -> (FireLite, std::path::PathBuf) {
+fn temp_db() -> (Hako, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "fl-cs-data-{}",
         std::time::SystemTime::now()
@@ -16,9 +16,9 @@ fn temp_db() -> (FireLite, std::path::PathBuf) {
             .unwrap()
             .as_nanos()
     ));
-    let mut cfg = FireLiteConfig::default();
+    let mut cfg = HakoConfig::default();
     cfg.durability_mode = DurabilityMode::Manual;
-    (FireLite::open(&dir, cfg).unwrap(), dir)
+    (Hako::open(&dir, cfg).unwrap(), dir)
 }
 
 struct Resp {
@@ -127,7 +127,7 @@ async fn login_cookie(addr: &std::net::SocketAddr, user: &str, pass: &str) -> St
         .expect("login sets cookie")
 }
 
-async fn spawn(db: FireLite) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn(db: Hako) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move {

@@ -70,7 +70,7 @@ pub mod imp {
         let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
         let info = ServiceInfo {
             name: name.into(),
-            display_name: "FireLite Cloud Server".into(),
+            display_name: "Hako Cloud Server".into(),
             service_type: ServiceType::OWN_PROCESS,
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
@@ -84,7 +84,7 @@ pub mod imp {
             .create_service(&info, ServiceAccess::CHANGE_CONFIG)
             .map_err(|e| format!("create service: {e}"))?;
         service
-            .set_description("FireLite offline-first sync hub + admin console")
+            .set_description("Hako offline-first sync hub + admin console")
             .map_err(|e| format!("set description: {e}"))?;
         Ok(())
     }

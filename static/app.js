@@ -1,4 +1,4 @@
-/* FireLite Console — vanilla JS, no build step. */
+/* HakoDB Console — vanilla JS, no build step. */
 'use strict';
 
 const $ = (sel, root) => (root || document).querySelector(sel);
@@ -85,7 +85,7 @@ function showLogin() {
   if (ES) { ES.close(); ES = null; }
   $('#nav').hidden = true;
   $('#view').innerHTML =
-    '<div id="login-wrap"><h2>FireLite Console</h2>' +
+    '<div id="login-wrap"><h2>HakoDB Console</h2>' +
     '<p class="muted">Sign in with an admin-console account.</p>' +
     '<form id="f" class="grid">' +
     '<label>Username</label><input id="u" autocomplete="username">' +

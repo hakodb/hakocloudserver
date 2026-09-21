@@ -1,13 +1,13 @@
 //! Console surface tests: static UI serving, setup probe, user admin
 //! endpoints incl. lockout guards. Raw HTTP, ephemeral ports.
 
-use firelite::config::{DurabilityMode, FireLiteConfig};
-use firelite::engine::FireLite;
+use hakodb::config::{DurabilityMode, HakoConfig};
+use hakodb::engine::Hako;
 use firelite_cloudserver::app::{build_router, AppState};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn temp_db() -> (FireLite, std::path::PathBuf) {
+fn temp_db() -> (Hako, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "fl-cs-ui-{}",
         std::time::SystemTime::now()
@@ -15,9 +15,9 @@ fn temp_db() -> (FireLite, std::path::PathBuf) {
             .unwrap()
             .as_nanos()
     ));
-    let mut cfg = FireLiteConfig::default();
+    let mut cfg = HakoConfig::default();
     cfg.durability_mode = DurabilityMode::Manual;
-    (FireLite::open(&dir, cfg).unwrap(), dir)
+    (Hako::open(&dir, cfg).unwrap(), dir)
 }
 
 struct Resp {
@@ -172,7 +172,7 @@ async fn login_cookie(addr: &std::net::SocketAddr, user: &str, pass: &str) -> St
         .expect("set-cookie")
 }
 
-async fn spawn(db: FireLite) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn(db: Hako) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move {
@@ -242,7 +242,7 @@ async fn static_console_served() {
 
     let r = call(&addr, "GET", "/", None, None).await;
     assert_eq!(r.code, 200);
-    assert!(r.body.contains("FireLite Console"));
+    assert!(r.body.contains("HakoDB Console"));
     assert_eq!(
         r.headers.get("content-type").map(String::as_str),
         Some("text/html; charset=utf-8")
@@ -268,7 +268,7 @@ async fn static_console_served() {
     // Deep link falls back to the shell.
     let r = call(&addr, "GET", "/dashboard", None, None).await;
     assert_eq!(r.code, 200);
-    assert!(r.body.contains("FireLite Console"));
+    assert!(r.body.contains("HakoDB Console"));
     // Unknown asset 404s.
     let r = call(&addr, "GET", "/nope.png", None, None).await;
     assert_eq!(r.code, 404);

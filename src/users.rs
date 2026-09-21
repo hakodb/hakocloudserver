@@ -5,8 +5,8 @@
 //! can never be disabled, demoted or deleted, and nobody can delete
 //! themselves (use another admin for that).
 
-use firelite::document::value::Value;
-use firelite::engine::FireLite;
+use hakodb::document::value::Value;
+use hakodb::engine::Hako;
 use serde::Serialize;
 
 use crate::auth::{upsert_user, Role, USERS_COLLECTION};
@@ -19,7 +19,7 @@ pub struct UserView {
     pub created_at: i64,
 }
 
-fn view_of(username: &str, doc: &firelite::document::firelite_doc::FireLiteDoc) -> Option<UserView> {
+fn view_of(username: &str, doc: &hakodb::document::hako_doc::HakoDoc) -> Option<UserView> {
     let role = match doc.get("role") {
         Some(Value::String(s)) => Role::parse(s)?,
         _ => return None,
@@ -37,9 +37,9 @@ fn view_of(username: &str, doc: &firelite::document::firelite_doc::FireLiteDoc) 
     })
 }
 
-pub fn list_users(db: &FireLite) -> Vec<UserView> {
+pub fn list_users(db: &Hako) -> Vec<UserView> {
     let rows = db
-        .query(firelite::query::query::Query::new(USERS_COLLECTION))
+        .query(hakodb::query::query::Query::new(USERS_COLLECTION))
         .unwrap_or_default();
     let mut out: Vec<UserView> = rows
         .iter()
@@ -49,21 +49,21 @@ pub fn list_users(db: &FireLite) -> Vec<UserView> {
     out
 }
 
-pub fn get_user(db: &FireLite, username: &str) -> Option<UserView> {
+pub fn get_user(db: &Hako, username: &str) -> Option<UserView> {
     db.get(USERS_COLLECTION, username)
         .ok()?
         .and_then(|doc| view_of(username, &doc))
 }
 
 /// Other enabled admins besides `except` (empty string = count all).
-fn other_enabled_admins(db: &FireLite, except: &str) -> usize {
+fn other_enabled_admins(db: &Hako, except: &str) -> usize {
     list_users(db)
         .iter()
         .filter(|u| u.role == Role::Admin && !u.disabled && u.username != except)
         .count()
 }
 
-fn guard_not_last_admin(db: &FireLite, target: &UserView, actor: &str) -> Result<(), String> {
+fn guard_not_last_admin(db: &Hako, target: &UserView, actor: &str) -> Result<(), String> {
     if target.username == actor {
         return Err("cannot change your own account: ask another admin".into());
     }
@@ -74,7 +74,7 @@ fn guard_not_last_admin(db: &FireLite, target: &UserView, actor: &str) -> Result
 }
 
 pub fn create_user(
-    db: &FireLite,
+    db: &Hako,
     username: &str,
     password: &str,
     role: Role,
@@ -87,7 +87,7 @@ pub fn create_user(
 }
 
 pub fn update_user(
-    db: &FireLite,
+    db: &Hako,
     actor: &str,
     username: &str,
     role: Option<Role>,
@@ -111,7 +111,7 @@ pub fn update_user(
         upsert_user(db, username, pw, next_role, next_disabled)?;
     } else {
         // Preserve the existing hash: rewrite the row manually.
-        let mut doc = firelite::document::firelite_doc::FireLiteDoc::default();
+        let mut doc = hakodb::document::hako_doc::HakoDoc::default();
         let raw = db
             .get(USERS_COLLECTION, username)
             .ok()
@@ -145,7 +145,7 @@ pub fn update_user(
     get_user(db, username).ok_or("unreachable".into())
 }
 
-pub fn delete_user(db: &FireLite, actor: &str, username: &str) -> Result<(), String> {
+pub fn delete_user(db: &Hako, actor: &str, username: &str) -> Result<(), String> {
     let current = get_user(db, username).ok_or("unknown user")?;
     guard_not_last_admin(db, &current, actor)?;
     db.delete(USERS_COLLECTION, username)

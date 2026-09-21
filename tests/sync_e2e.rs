@@ -2,16 +2,16 @@
 //! exercising group admission (admit with key, reject without, open by
 //! default) with actual document flow — not just the decision function.
 
-use firelite::config::FireLiteConfig;
-use firelite::document::firelite_doc::FireLiteDoc;
-use firelite::document::value::Value;
-use firelite::engine::FireLite;
-use firelite::cloud_sync::CloudSync;
+use hakodb::config::HakoConfig;
+use hakodb::document::hako_doc::HakoDoc;
+use hakodb::document::value::Value;
+use hakodb::engine::Hako;
+use hakodb::cloud_sync::CloudSync;
 use firelite_cloudserver::groups::{create_group, GroupMode};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn temp_db(tag: &str) -> (Arc<FireLite>, std::path::PathBuf) {
+fn temp_db(tag: &str) -> (Arc<Hako>, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "fl-cs-e2e-{tag}-{}",
         std::time::SystemTime::now()
@@ -22,18 +22,18 @@ fn temp_db(tag: &str) -> (Arc<FireLite>, std::path::PathBuf) {
     let _ = std::fs::remove_dir_all(&dir);
     // Default (Interval) durability: the sync tailers read the WAL file,
     // so buffered-only Manual mode would starve them.
-    (Arc::new(FireLite::open(&dir, FireLiteConfig::default()).unwrap()), dir)
+    (Arc::new(Hako::open(&dir, HakoConfig::default()).unwrap()), dir)
 }
 
-fn put_doc(db: &FireLite, col: &str, id: &str) {
-    let mut doc = FireLiteDoc::default();
+fn put_doc(db: &Hako, col: &str, id: &str) {
+    let mut doc = HakoDoc::default();
     doc.insert("v", Value::Int(1));
     db.put(col, id, &doc).unwrap();
     db.flush().ok();
 }
 
 async fn start_server(
-    db: Arc<FireLite>,
+    db: Arc<Hako>,
     port: u16,
 ) -> CloudSync {
     let sync = CloudSync::server(db, "e2e-server", "");
@@ -134,7 +134,7 @@ async fn keyless_client_rejected_from_registered_group() {
     // ...and the server created no room for the rejected peer.
     assert!(
         server_db
-            .query(firelite::query::query::Query::new("__firelite_rooms"))
+            .query(hakodb::query::query::Query::new("__firelite_rooms"))
             .map(|rows| rows.is_empty())
             .unwrap_or(true),
         "rejected peer must not create rooms"

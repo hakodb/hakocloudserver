@@ -1,13 +1,13 @@
 //! Live endpoint test: boot the real app on an ephemeral port and speak
 //! raw HTTP at it (no HTTP client dependency needed).
 
-use firelite::config::{DurabilityMode, FireLiteConfig};
-use firelite::engine::FireLite;
+use hakodb::config::{DurabilityMode, HakoConfig};
+use hakodb::engine::Hako;
 use firelite_cloudserver::app::{build_router, AppState};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn temp_db() -> (FireLite, std::path::PathBuf) {
+fn temp_db() -> (Hako, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "fl-cs-health-{}",
         std::time::SystemTime::now()
@@ -15,9 +15,9 @@ fn temp_db() -> (FireLite, std::path::PathBuf) {
             .unwrap()
             .as_nanos()
     ));
-    let mut cfg = FireLiteConfig::default();
+    let mut cfg = HakoConfig::default();
     cfg.durability_mode = DurabilityMode::Manual;
-    (FireLite::open(&dir, cfg).unwrap(), dir)
+    (Hako::open(&dir, cfg).unwrap(), dir)
 }
 
 #[tokio::test]

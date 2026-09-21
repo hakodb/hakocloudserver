@@ -9,12 +9,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use firelite::document::firelite_doc::FireLiteDoc;
-use firelite::document::value::Value;
-use firelite::engine::{BatchMutation, FireLite};
-use firelite::index::composite::definition::SortDirection;
-use firelite::query::filter::Operator;
-use firelite::query::query::Query as FireQuery;
+use hakodb::document::hako_doc::HakoDoc;
+use hakodb::document::value::Value;
+use hakodb::engine::{BatchMutation, Hako};
+use hakodb::index::composite::definition::SortDirection;
+use hakodb::query::filter::Operator;
+use hakodb::query::query::Query as FireQuery;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
@@ -73,7 +73,7 @@ fn fire_to_json(v: &Value) -> JsonValue {
     }
 }
 
-fn doc_to_json(id: &str, doc: &FireLiteDoc) -> JsonValue {
+fn doc_to_json(id: &str, doc: &HakoDoc) -> JsonValue {
     let mut o = serde_json::Map::new();
     o.insert("id".to_string(), json!(id));
     for (k, v) in &doc.fields {
@@ -83,9 +83,9 @@ fn doc_to_json(id: &str, doc: &FireLiteDoc) -> JsonValue {
     JsonValue::Object(o)
 }
 
-fn doc_from_json(data: &JsonValue) -> Result<FireLiteDoc, String> {
+fn doc_from_json(data: &JsonValue) -> Result<HakoDoc, String> {
     let obj = data.as_object().ok_or("data must be a JSON object")?;
-    let mut doc = FireLiteDoc::default();
+    let mut doc = HakoDoc::default();
     for (k, v) in obj {
         if k == "id" || k == "_time" {
             continue;
@@ -141,13 +141,13 @@ struct RoomView {
     collections: HashMap<String, i64>,
 }
 
-fn room_docs(db: &FireLite) -> Vec<(String, FireLiteDoc)> {
-    db.query(FireQuery::new(firelite::cloud_sync::INTERNAL_ROOMS_COLLECTION))
+fn room_docs(db: &Hako) -> Vec<(String, HakoDoc)> {
+    db.query(FireQuery::new(hakodb::cloud_sync::INTERNAL_ROOMS_COLLECTION))
         .unwrap_or_default()
 }
 
 /// Storage prefixes of all known rooms (drives version-clock snapshots).
-pub(crate) fn room_prefixes(db: &FireLite) -> Vec<String> {
+pub(crate) fn room_prefixes(db: &Hako) -> Vec<String> {
     room_docs(db)
         .iter()
         .filter_map(|(_, doc)| match doc.get("prefix") {

@@ -9,9 +9,9 @@ name = "firelite-cloudserver"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to the firelite core branch until the first crates.io release,
+# Pinned to the core branch until the first crates.io release,
 # then switch to `version = "0.8"`.
-firelite = { git = "https://github.com/rizaptk/firelite.git", branch = "cloud_sync", features = ["cloud-sync"] }
+hakodb = { git = "https://github.com/rizaptk/firelite.git", branch = "cloud_sync", features = ["cloud-sync"] }
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

@@ -8,8 +8,8 @@ use std::future::Future;
 
 use crate::app::{build_router, AppState};
 use crate::config::ServerConfig;
-use firelite::config::FireLiteConfig;
-use firelite::engine::FireLite;
+use hakodb::config::HakoConfig;
+use hakodb::engine::Hako;
 
 pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Result<(), String> {
     // try_init: safe to call from console and service paths alike (second
@@ -47,18 +47,18 @@ pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Resul
     // survives any future change to core defaults. A client naming one of
     // these in a packet is dropped at the ingest choke point and never
     // served, relayed, or tail-broadcast under that name.
-    let mut sync_cfg = FireLiteConfig::default();
+    let mut sync_cfg = HakoConfig::default();
     sync_cfg.sync_excluded = vec![
         "__firelite_rooms".to_string(),
         "__users".to_string(),
         "__groups".to_string(),
     ];
-    let db = FireLite::open(&cfg.db_path, sync_cfg)
+    let db = Hako::open(&cfg.db_path, sync_cfg)
         .map_err(|e| format!("open db {}: {e}", cfg.db_path))?;
     tracing::info!(db_path = %cfg.db_path, admin_bind = %cfg.admin_bind, sync_bind = %cfg.sync_bind, server_id = %cfg.server_id, "firelite-cloudserver starting");
 
     let db = std::sync::Arc::new(db);
-    let sync = std::sync::Arc::new(firelite::cloud_sync::CloudSync::server(
+    let sync = std::sync::Arc::new(hakodb::cloud_sync::CloudSync::server(
         db.clone(),
         &cfg.server_id,
         &cfg.sync_token,

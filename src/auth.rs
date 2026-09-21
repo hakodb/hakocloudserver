@@ -2,7 +2,7 @@
 //! hashing, in-memory sessions over httpOnly cookies, login rate limiting.
 //!
 //! The `__users` collection never leaves the device (see
-//! `firelite::engine::engine::is_sync_excluded`) and is hidden from
+//! `hakodb::engine::engine::is_sync_excluded`) and is hidden from
 //! `list_collections` (underscore-prefixed), so credentials can't leak
 //! through sync or the data browser.
 
@@ -10,9 +10,9 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use firelite::document::firelite_doc::FireLiteDoc;
-use firelite::document::value::Value;
-use firelite::engine::FireLite;
+use hakodb::document::hako_doc::HakoDoc;
+use hakodb::document::value::Value;
+use hakodb::engine::Hako;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -157,7 +157,7 @@ pub fn new_session_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn get_str(doc: &FireLiteDoc, field: &str) -> Option<String> {
+fn get_str(doc: &HakoDoc, field: &str) -> Option<String> {
     match doc.get(field) {
         Some(Value::String(s)) => Some(s.clone()),
         _ => None,
@@ -165,7 +165,7 @@ fn get_str(doc: &FireLiteDoc, field: &str) -> Option<String> {
 }
 
 /// Load a user row. Returns (password_hash, role, disabled).
-pub fn load_user(db: &FireLite, username: &str) -> Option<(String, Role, bool)> {
+pub fn load_user(db: &Hako, username: &str) -> Option<(String, Role, bool)> {
     let doc = db.get(USERS_COLLECTION, username).ok()??;
     let hash = get_str(&doc, "password_hash")?;
     let role = doc
@@ -181,8 +181,8 @@ pub fn load_user(db: &FireLite, username: &str) -> Option<(String, Role, bool)> 
 
 /// True when no usable admin path exists (fresh DB): either the collection
 /// is empty or no enabled admin remains. Drives the setup-wizard gate.
-pub fn setup_required(db: &FireLite) -> bool {
-    match db.query(firelite::query::query::Query::new(USERS_COLLECTION)) {
+pub fn setup_required(db: &Hako) -> bool {
+    match db.query(hakodb::query::query::Query::new(USERS_COLLECTION)) {
         Ok(rows) => !rows.iter().any(|(_, doc)| {
             !matches!(doc.get("disabled"), Some(Value::Bool(true)))
                 && doc.get("role").and_then(|v| match v {
@@ -196,7 +196,7 @@ pub fn setup_required(db: &FireLite) -> bool {
 
 /// Insert or replace a user row. Passwords never persist in any other form.
 pub fn upsert_user(
-    db: &FireLite,
+    db: &Hako,
     username: &str,
     password: &str,
     role: Role,
@@ -213,7 +213,7 @@ pub fn upsert_user(
         Role::Operator => "operator",
         Role::Admin => "admin",
     };
-    let mut doc = FireLiteDoc::default();
+    let mut doc = HakoDoc::default();
     doc.insert("password_hash", Value::String(hash_password(password)?));
     doc.insert("role", Value::String(role_str.to_string()));
     doc.insert("disabled", Value::Bool(disabled));

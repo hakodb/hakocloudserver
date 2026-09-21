@@ -141,8 +141,8 @@ pub async fn events(
             let rx_watch = db_pump.watch_collection(&col);
             while let Ok(ev) = rx_watch.recv() {
                 let kind = match ev.kind {
-                    firelite::engine::ChangeKind::Put => "put",
-                    firelite::engine::ChangeKind::Delete => "delete",
+                    hakodb::engine::ChangeKind::Put => "put",
+                    hakodb::engine::ChangeKind::Delete => "delete",
                 };
                 if !send_event(
                     &tx_pump,

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::config::{load_config, ConfigLayer, ServerConfig};
 
 #[derive(Parser, Debug)]
-#[command(name = "firelite-cloudserver", about = "Standalone FireLite cloud-sync server")]
+#[command(name = "firelite-cloudserver", about = "Standalone Hako cloud-sync server")]
 pub struct Cli {
     /// Config file (TOML). Defaults to ./firelite-cloud.toml when present.
     #[arg(long)]

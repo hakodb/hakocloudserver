@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
-use firelite::engine::FireLite;
+use hakodb::engine::Hako;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -25,17 +25,17 @@ use crate::groups::{    add_member, create_group, delete_group, get_group, list_
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<FireLite>,
+    pub db: Arc<Hako>,
     pub auth: Arc<AuthStore>,
     pub secure_cookies: bool,
     /// Sync plane handle (None in tests / before boot).
-    pub sync: Option<Arc<firelite::cloud_sync::CloudSync>>,
+    pub sync: Option<Arc<hakodb::cloud_sync::CloudSync>>,
     /// Resolved server config snapshot for display (None in tests).
     pub config: Option<crate::config::ServerConfig>,
 }
 
 impl AppState {
-    pub fn new(db: Arc<FireLite>, secure_cookies: bool) -> Self {
+    pub fn new(db: Arc<Hako>, secure_cookies: bool) -> Self {
         Self {
             db,
             auth: Arc::new(AuthStore::default()),
@@ -45,7 +45,7 @@ impl AppState {
         }
     }
 
-    pub fn with_sync(mut self, sync: Arc<firelite::cloud_sync::CloudSync>) -> Self {
+    pub fn with_sync(mut self, sync: Arc<hakodb::cloud_sync::CloudSync>) -> Self {
         self.sync = Some(sync);
         self
     }

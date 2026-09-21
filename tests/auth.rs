@@ -1,13 +1,13 @@
 //! Auth flow tests against a live app instance (raw HTTP, ephemeral port).
 
-use firelite::config::{DurabilityMode, FireLiteConfig};
-use firelite::engine::FireLite;
+use hakodb::config::{DurabilityMode, HakoConfig};
+use hakodb::engine::Hako;
 use firelite_cloudserver::app::{build_router, AppState};
 use firelite_cloudserver::auth::{upsert_user, Role};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn temp_db() -> (FireLite, std::path::PathBuf) {
+fn temp_db() -> (Hako, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "fl-cs-auth-{}",
         std::time::SystemTime::now()
@@ -15,9 +15,9 @@ fn temp_db() -> (FireLite, std::path::PathBuf) {
             .unwrap()
             .as_nanos()
     ));
-    let mut cfg = FireLiteConfig::default();
+    let mut cfg = HakoConfig::default();
     cfg.durability_mode = DurabilityMode::Manual;
-    (FireLite::open(&dir, cfg).unwrap(), dir)
+    (Hako::open(&dir, cfg).unwrap(), dir)
 }
 
 struct Client {
@@ -118,7 +118,7 @@ fn cookie_value(set_cookie: &str) -> String {
     set_cookie.split(';').next().unwrap_or("").to_string()
 }
 
-async fn spawn_app(db: FireLite) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn_app(db: Hako) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move {
