@@ -44,11 +44,14 @@ pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Resul
     // the room registry, user credentials, and group credentials must not
     // replicate to clients. The core also excludes these by default; this
     // declaration keeps the guarantee local to the server crate so it
-    // survives any future change to core defaults. A client naming one of
-    // these in a packet is dropped at the ingest choke point and never
-    // served, relayed, or tail-broadcast under that name.
+    // survives any future change to core defaults. The pre-rebrand
+    // `__firelite_rooms` alias stays until core drops it: a database last
+    // opened by old binaries still carries that directory. A client naming
+    // one of these in a packet is dropped at the ingest choke point and
+    // never served, relayed, or tail-broadcast under that name.
     let mut sync_cfg = HakoConfig::default();
     sync_cfg.sync_excluded = vec![
+        "__hako_rooms".to_string(),
         "__firelite_rooms".to_string(),
         "__users".to_string(),
         "__groups".to_string(),
