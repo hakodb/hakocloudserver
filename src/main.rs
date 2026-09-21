@@ -1,7 +1,7 @@
 //! hako-cloudserver: standalone cloud-sync server + admin console.
 
 use clap::Parser;
-use hako_cloudserver::cli::{load_cfg, Cli};
+use hakocloudserver::cli::{load_cfg, Cli};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -9,7 +9,7 @@ async fn main() -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        use hako_cloudserver::service::imp as svc;
+        use hakocloudserver::service::imp as svc;
         if cli.install_service {
             let cfg = load_cfg(&cli)?;
             svc::install(&cli.service_name, &cfg)?;
@@ -27,7 +27,7 @@ async fn main() -> Result<(), String> {
     }
 
     let cfg = load_cfg(&cli)?;
-    hako_cloudserver::server::run(cfg, async {
+    hakocloudserver::server::run(cfg, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await

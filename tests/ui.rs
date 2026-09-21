@@ -3,7 +3,7 @@
 
 use hakodb::config::{DurabilityMode, HakoConfig};
 use hakodb::engine::Hako;
-use hako_cloudserver::app::{build_router, AppState};
+use hakocloudserver::app::{build_router, AppState};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

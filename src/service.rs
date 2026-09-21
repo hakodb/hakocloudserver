@@ -1,9 +1,9 @@
 //! Windows Service integration (Windows only).
 //!
-//! Installs `hako-cloudserver` as an SCM-managed service so it runs at
+//! Installs `hakocloudserver` as an SCM-managed service so it runs at
 //! boot without a console session:
-//!   hako-cloudserver --db-path C:\data\fl.db --install-service [--service-name NAME]
-//!   hako-cloudserver --uninstall-service [--service-name NAME]
+//!   hakocloudserver --db-path C:\data\hako.db --install-service [--service-name NAME]
+//!   hakocloudserver --uninstall-service [--service-name NAME]
 //! The installed image runs `... --run-service` with the same operational
 //! flags baked in (services start in System32, so all paths must be
 //! absolute — enforced at install). Stop/Shutdown from the SCM drains via
@@ -27,7 +27,7 @@ pub mod imp {
     use crate::cli::{load_cfg, Cli};
     use crate::config::ServerConfig;
 
-    pub const DEFAULT_SERVICE_NAME: &str = "hako-cloudserver";
+    pub const DEFAULT_SERVICE_NAME: &str = "hakocloudserver";
 
     /// Args baked into the installed image (minus --install-service itself).
     /// Everything the server needs at boot must be explicit: no CWD, no tty.
@@ -179,7 +179,7 @@ pub mod imp {
         fn cfg() -> ServerConfig {
             ServerConfig {
                 db_path: if cfg!(windows) {
-                    r"C:\data\fl.db".into()
+                    r"C:\data\hako.db".into()
                 } else {
                     "/data/fl.db".into()
                 },
@@ -209,7 +209,7 @@ pub mod imp {
                     "custom",
                     "--db-path",
                     if cfg!(windows) {
-                        r"C:\data\fl.db"
+                        r"C:\data\hako.db"
                     } else {
                         "/data/fl.db"
                     },

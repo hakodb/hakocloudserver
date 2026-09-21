@@ -10,13 +10,13 @@ Type=simple
 User=hako
 Group=hako
 # All paths absolute: services have no useful CWD.
-ExecStart=/usr/local/bin/hako-cloudserver \
-  --db-path /var/lib/hako-cloud/db \
+ExecStart=/usr/local/bin/hakocloudserver \
+  --db-path /var/lib/hakocloud/db \
   --admin-bind 127.0.0.1:8081 \
   --sync-bind 0.0.0.0:8080
 Environment=RUST_LOG=info
 # If the admin console is exposed beyond loopback, pass TLS material:
-#   --tls-cert /etc/hako-cloud/fullchain.pem --tls-key /etc/hako-cloud/privkey.pem
+#   --tls-cert /etc/hakocloud/fullchain.pem --tls-key /etc/hakocloud/privkey.pem
 Restart=always
 RestartSec=3
 # Hardening: read-only system, private /tmp, no new privileges. Grant write

@@ -1,17 +1,18 @@
 [package]
-name = "hako-cloudserver"
+name = "hakocloudserver"
 version = "0.1.1"
 edition = "2021"
 description = "Standalone HakoDB cloud-sync server with admin console"
+license = "MIT"
 
 [[bin]]
-name = "hako-cloudserver"
+name = "hakocloudserver"
 path = "src/main.rs"
 
 [dependencies]
 # Pinned to the core branch until the first crates.io release,
 # then switch to `version = "0.8"`.
-hakodb = { git = "https://github.com/rizaptk/firelite.git", branch = "cloud_sync", features = ["cloud-sync"] }
+hakodb = { git = "https://github.com/hakodb/hakodb.git", branch = "cloud_sync", features = ["cloud-sync"] }
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

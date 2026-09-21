@@ -1,4 +1,4 @@
-# hako-cloudserver
+# hakocloudserver
 
 Standalone HakoDB cloud-sync hub
 with admin console: room-scoped document sync over WebSocket, group/user
@@ -14,7 +14,7 @@ convention.
 
 ## Compatibility
 
-| hako-cloudserver | hako core |
+| hakocloudserver | hako core |
 |---|---|
 | 0.1.1 | `cloud_sync` branch (pre-crates.io) |
 
@@ -34,7 +34,7 @@ A room-agnostic sync hub plus an admin web console (no JS framework —
 embedded HTML + SSE), in one process, two ports.
 
 ```bash
-hako-cloudserver \
+hakocloudserver \
   --db-path /var/lib/hako-cloud/db \
   --admin-bind 127.0.0.1:8081 \
   --sync-bind 0.0.0.0:8080
@@ -87,7 +87,7 @@ The sync plane stays `ws://` behind a reverse proxy, or terminate there
 too — both are documented deployments. Refusing to start with only half
 the TLS pair is deliberate (fail-closed).
 
-- Linux: `contrib/hako-cloudserver.service` (hardened
+- Linux: `contrib/hakocloudserver.service` (hardened
   systemd unit — `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`,
   `ReadWritePaths` scoped to the DB dir).
 - Windows: `--install-service [--service-name NAME]` (requires absolute

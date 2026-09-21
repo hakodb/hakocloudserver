@@ -7,7 +7,7 @@ use hakodb::document::hako_doc::HakoDoc;
 use hakodb::document::value::Value;
 use hakodb::engine::Hako;
 use hakodb::cloud_sync::CloudSync;
-use hako_cloudserver::groups::{create_group, GroupMode};
+use hakocloudserver::groups::{create_group, GroupMode};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

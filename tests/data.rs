@@ -3,8 +3,8 @@
 
 use hakodb::config::{DurabilityMode, HakoConfig};
 use hakodb::engine::Hako;
-use hako_cloudserver::app::{build_router, AppState};
-use hako_cloudserver::auth::{upsert_user, Role};
+use hakocloudserver::app::{build_router, AppState};
+use hakocloudserver::auth::{upsert_user, Role};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

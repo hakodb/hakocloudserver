@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::config::{load_config, ConfigLayer, ServerConfig};
 
 #[derive(Parser, Debug)]
-#[command(name = "hako-cloudserver", about = "Standalone HakoDB cloud-sync server")]
+#[command(name = "hakocloudserver", about = "Standalone HakoDB cloud-sync server")]
 pub struct Cli {
     /// Config file (TOML). Defaults to ./hako-cloud.toml (legacy ./firelite-cloud.toml honored) when present.
     #[arg(long)]
@@ -54,7 +54,7 @@ pub struct Cli {
     pub run_service: bool,
     /// Windows Service name.
     #[cfg(windows)]
-    #[arg(long, default_value = "hako-cloudserver")]
+    #[arg(long, default_value = "hakocloudserver")]
     pub service_name: String,
 }
 
