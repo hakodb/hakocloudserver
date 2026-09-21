@@ -2,7 +2,7 @@
 
 use hakodb::config::{DurabilityMode, HakoConfig};
 use hakodb::engine::Hako;
-use firelite_cloudserver::app::{build_router, AppState};
+use hako_cloudserver::app::{build_router, AppState};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

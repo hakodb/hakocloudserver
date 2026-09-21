@@ -1,9 +1,9 @@
 //! Windows Service integration (Windows only).
 //!
-//! Installs `firelite-cloudserver` as an SCM-managed service so it runs at
+//! Installs `hako-cloudserver` as an SCM-managed service so it runs at
 //! boot without a console session:
-//!   firelite-cloudserver --db-path C:\data\fl.db --install-service [--service-name NAME]
-//!   firelite-cloudserver --uninstall-service [--service-name NAME]
+//!   hako-cloudserver --db-path C:\data\fl.db --install-service [--service-name NAME]
+//!   hako-cloudserver --uninstall-service [--service-name NAME]
 //! The installed image runs `... --run-service` with the same operational
 //! flags baked in (services start in System32, so all paths must be
 //! absolute — enforced at install). Stop/Shutdown from the SCM drains via
@@ -27,7 +27,7 @@ pub mod imp {
     use crate::cli::{load_cfg, Cli};
     use crate::config::ServerConfig;
 
-    pub const DEFAULT_SERVICE_NAME: &str = "firelite-cloudserver";
+    pub const DEFAULT_SERVICE_NAME: &str = "hako-cloudserver";
 
     /// Args baked into the installed image (minus --install-service itself).
     /// Everything the server needs at boot must be explicit: no CWD, no tty.

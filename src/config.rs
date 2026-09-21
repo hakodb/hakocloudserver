@@ -6,11 +6,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const DEFAULT_DB_PATH: &str = "./firelite-cloud.db";
+pub const DEFAULT_DB_PATH: &str = "./hako-cloud.db";
 pub const DEFAULT_ADMIN_BIND: &str = "127.0.0.1:8081";
 pub const DEFAULT_SYNC_BIND: &str = "0.0.0.0:8080";
 pub const DEFAULT_LOG_LEVEL: &str = "info";
-pub const DEFAULT_SERVER_ID: &str = "firelite-cloudserver";
+pub const DEFAULT_SERVER_ID: &str = "hako-cloudserver";
 
 /// Resolved, fully-defaulted configuration the server runs with.
 #[derive(Debug, Clone)]
@@ -115,30 +115,36 @@ impl ServerConfig {
     }
 }
 
-/// `FL_*` environment layer (`FL_DB_PATH`, `FL_ADMIN_BIND`, `FL_SYNC_BIND`,
-/// `FL_LOG_LEVEL`, `FL_SECURE_COOKIES=1`, `FL_SERVER_ID`, `FL_SYNC_TOKEN`,
-/// `FL_TLS_CERT`, `FL_TLS_KEY`). Only non-empty values count.
+/// `HK_*` environment layer (`HK_DB_PATH`, `HK_ADMIN_BIND`, `HK_SYNC_BIND`,
+/// `HK_LOG_LEVEL`, `HK_SECURE_COOKIES=1`, `HK_SERVER_ID`, `HK_SYNC_TOKEN`,
+/// `HK_TLS_CERT`, `HK_TLS_KEY`). Only non-empty values count.
+/// Pre-rebrand `FL_*` spellings still work as fallback (checked second);
+/// new deployments should use `HK_*`.
 fn env_layer(vars: &HashMap<String, String>) -> ConfigLayer {
     let get = |k: &str| {
         vars.get(k)
             .filter(|v| !v.trim().is_empty())
             .map(|v| v.trim().to_string())
     };
+    // HK_ primary, FL_ legacy fallback (removed in a later version).
+    let get2 = |hk: &str, fl: &str| get(hk).or_else(|| get(fl));
     ConfigLayer {
-        db_path: get("FL_DB_PATH"),
-        admin_bind: get("FL_ADMIN_BIND"),
-        sync_bind: get("FL_SYNC_BIND"),
-        log_level: get("FL_LOG_LEVEL"),
-        secure_cookies: get("FL_SECURE_COOKIES").map(|v| v == "1" || v.eq_ignore_ascii_case("true")),
-        server_id: get("FL_SERVER_ID"),
-        sync_token: get("FL_SYNC_TOKEN"),
-        tls_cert: get("FL_TLS_CERT"),
-        tls_key: get("FL_TLS_KEY"),
+        db_path: get2("HK_DB_PATH", "FL_DB_PATH"),
+        admin_bind: get2("HK_ADMIN_BIND", "FL_ADMIN_BIND"),
+        sync_bind: get2("HK_SYNC_BIND", "FL_SYNC_BIND"),
+        log_level: get2("HK_LOG_LEVEL", "FL_LOG_LEVEL"),
+        secure_cookies: get2("HK_SECURE_COOKIES", "FL_SECURE_COOKIES")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+        server_id: get2("HK_SERVER_ID", "FL_SERVER_ID"),
+        sync_token: get2("HK_SYNC_TOKEN", "FL_SYNC_TOKEN"),
+        tls_cert: get2("HK_TLS_CERT", "FL_TLS_CERT"),
+        tls_key: get2("HK_TLS_KEY", "FL_TLS_KEY"),
     }
 }
 
 /// Resolve final config. `config_path`: explicit `--config`, else
-/// `./firelite-cloud.toml` when present, else no file layer.
+/// `./hako-cloud.toml` (legacy `./firelite-cloud.toml` still honored)
+/// when present, else no file layer.
 pub fn load_config(
     config_path: Option<&str>,
     cli: ConfigLayer,
@@ -147,7 +153,11 @@ pub fn load_config(
     let mut base = ConfigLayer::default();
     let path = match config_path {
         Some(p) => Some(p.to_string()),
+        None if std::path::Path::new("./hako-cloud.toml").exists() => {
+            Some("./hako-cloud.toml".to_string())
+        }
         None if std::path::Path::new("./firelite-cloud.toml").exists() => {
+            // Legacy filename from pre-rebrand deployments.
             Some("./firelite-cloud.toml".to_string())
         }
         None => None,
@@ -190,7 +200,7 @@ mod tests {
             "db_path = \"/file.db\"\nadmin_bind = \"1.1.1.1:1\"\nsync_bind = \"2.2.2.2:2\"\nlog_level = \"debug\"\n",
         )
         .unwrap();
-        let env = vars(&[("FL_DB_PATH", "/env.db"), ("FL_ADMIN_BIND", "3.3.3.3:3")]);
+        let env = vars(&[("HK_DB_PATH", "/env.db"), ("HK_ADMIN_BIND", "3.3.3.3:3")]);
         let cli = ConfigLayer {
             admin_bind: Some("4.4.4.4:4".into()),
             ..Default::default()
@@ -205,7 +215,7 @@ mod tests {
 
     #[test]
     fn empty_env_values_ignored_and_missing_file_errors() {
-        let env = vars(&[("FL_DB_PATH", "   ")]);
+        let env = vars(&[("HK_DB_PATH", "   ")]);
         let cfg = load_config(None, ConfigLayer::default(), &env).unwrap();
         assert_eq!(cfg.db_path, DEFAULT_DB_PATH);
         assert!(load_config(
@@ -240,7 +250,7 @@ mod tests {
         // Env + file merge for the new fields.
         let dir = std::env::temp_dir().join("fl-cfg-tls.toml");
         std::fs::write(&dir, "tls_cert = \"/c.pem\"\nserver_id = \"hub-1\"\n").unwrap();
-        let env = vars(&[("FL_TLS_KEY", "/k.pem"), ("FL_SECURE_COOKIES", "true")]);
+        let env = vars(&[("HK_TLS_KEY", "/k.pem"), ("HK_SECURE_COOKIES", "true")]);
         let cfg = load_config(Some(dir.to_str().unwrap()), ConfigLayer::default(), &env).unwrap();
         assert!(cfg.tls_enabled());
         assert!(cfg.tls_error().is_none());
@@ -259,5 +269,17 @@ mod tests {
             cfg.tls_error(),
             Some("tls_cert set without tls_key".to_string())
         );
+    }
+
+    #[test]
+    fn legacy_fl_env_still_honored() {
+        // Pre-rebrand spellings work (checked second); HK_ wins on conflict.
+        let env = vars(&[("FL_DB_PATH", "/legacy.db"), ("FL_LOG_LEVEL", "warn")]);
+        let cfg = load_config(None, ConfigLayer::default(), &env).unwrap();
+        assert_eq!(cfg.db_path, "/legacy.db");
+        assert_eq!(cfg.log_level, "warn");
+        let both = vars(&[("HK_DB_PATH", "/new.db"), ("FL_DB_PATH", "/legacy.db")]);
+        let cfg = load_config(None, ConfigLayer::default(), &both).unwrap();
+        assert_eq!(cfg.db_path, "/new.db");
     }
 }

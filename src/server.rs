@@ -52,13 +52,13 @@ pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Resul
     let mut sync_cfg = HakoConfig::default();
     sync_cfg.sync_excluded = vec![
         "__hako_rooms".to_string(),
-        "__firelite_rooms".to_string(),
+        "__hako_rooms".to_string(),
         "__users".to_string(),
         "__groups".to_string(),
     ];
     let db = Hako::open(&cfg.db_path, sync_cfg)
         .map_err(|e| format!("open db {}: {e}", cfg.db_path))?;
-    tracing::info!(db_path = %cfg.db_path, admin_bind = %cfg.admin_bind, sync_bind = %cfg.sync_bind, server_id = %cfg.server_id, "firelite-cloudserver starting");
+    tracing::info!(db_path = %cfg.db_path, admin_bind = %cfg.admin_bind, sync_bind = %cfg.sync_bind, server_id = %cfg.server_id, "hako-cloudserver starting");
 
     let db = std::sync::Arc::new(db);
     let sync = std::sync::Arc::new(hakodb::cloud_sync::CloudSync::server(

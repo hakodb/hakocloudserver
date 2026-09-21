@@ -1,11 +1,11 @@
 [package]
-name = "firelite-cloudserver"
+name = "hako-cloudserver"
 version = "0.1.1"
 edition = "2021"
-description = "Standalone FireLite cloud-sync server with admin console"
+description = "Standalone HakoDB cloud-sync server with admin console"
 
 [[bin]]
-name = "firelite-cloudserver"
+name = "hako-cloudserver"
 path = "src/main.rs"
 
 [dependencies]

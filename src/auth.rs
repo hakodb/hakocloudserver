@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const USERS_COLLECTION: &str = "__users";
-pub const SESSION_COOKIE: &str = "fl_admin_session";
+pub const SESSION_COOKIE: &str = "hako_admin_session";
 pub const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const MAX_LOGIN_ATTEMPTS: usize = 5;
 const LOGIN_WINDOW: Duration = Duration::from_secs(60);
@@ -311,11 +311,11 @@ mod tests {
     #[test]
     fn cookie_helpers() {
         assert_eq!(
-            token_from_cookie("a=1; fl_admin_session=tok123; b=2"),
+            token_from_cookie("a=1; hako_admin_session=tok123; b=2"),
             Some("tok123".to_string())
         );
         assert_eq!(token_from_cookie("a=1"), None);
-        assert_eq!(token_from_cookie("fl_admin_session=; a=1"), None);
+        assert_eq!(token_from_cookie("hako_admin_session=; a=1"), None);
         let set = set_cookie_value("tok", false, false);
         assert!(set.contains("HttpOnly") && set.contains("SameSite=Strict"));
         assert!(!set.contains("Secure"));

@@ -7,7 +7,7 @@ use hakodb::document::hako_doc::HakoDoc;
 use hakodb::document::value::Value;
 use hakodb::engine::Hako;
 use hakodb::cloud_sync::CloudSync;
-use firelite_cloudserver::groups::{create_group, GroupMode};
+use hako_cloudserver::groups::{create_group, GroupMode};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -134,7 +134,7 @@ async fn keyless_client_rejected_from_registered_group() {
     // ...and the server created no room for the rejected peer.
     assert!(
         server_db
-            .query(hakodb::query::query::Query::new("__firelite_rooms"))
+            .query(hakodb::query::query::Query::new("__hako_rooms"))
             .map(|rows| rows.is_empty())
             .unwrap_or(true),
         "rejected peer must not create rooms"
