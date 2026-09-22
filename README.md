@@ -1,5 +1,7 @@
 # hakocloudserver
 
+> Part of [**HakoDB**](https://github.com/hakodb/hakodb) — embedded Firestore-style document DB in Rust. The engine + C ABI live in `hakodb/hakodb`; this repo holds the cloud-sync hub.
+
 Standalone HakoDB cloud-sync hub
 with admin console: room-scoped document sync over WebSocket, group/user
 credential stores, and an HTTP admin API + UI.
