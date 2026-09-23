@@ -21,6 +21,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 argon2 = "0.5"
+sha2 = "0.10"
 rand = "0.8"
 futures-core = "0.3"
 rust-embed = "8"

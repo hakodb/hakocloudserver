@@ -18,7 +18,7 @@ convention.
 
 | hakocloudserver | hako core |
 |---|---|
-| 0.1.1 | `cloud_sync` branch (pre-crates.io) |
+| 0.1.1 | `hakodb 0.8.23+` (crates.io) |
 
 ## Build & test
 
@@ -27,8 +27,7 @@ cargo build --release
 cargo test
 ```
 
-The `hakodb` dependency tracks the core `cloud_sync` branch until the
-first crates.io release, then pins to `version = "0.8"`.
+The `hakodb` dependency comes from crates.io (`cloud-sync` feature).
 
 ## Run
 
@@ -46,7 +45,8 @@ Configuration layers (lowest wins last): compiled defaults <
 `./hako-cloud.toml` (auto-loaded when present; legacy
 `./firelite-cloud.toml` still honored) < `HK_*` env
 (`HK_DB_PATH`, `HK_ADMIN_BIND`, `HK_SYNC_BIND`, `HK_LOG_LEVEL`,
-`HK_SECURE_COOKIES=1`, `HK_SERVER_ID`, `HK_SYNC_TOKEN`, `HK_TLS_CERT`,
+`HK_SECURE_COOKIES=1`, `HK_SERVER_ID`, `HK_SYNC_TOKEN`,
+`HK_SYNC_TOKEN_FILE` (secret out of argv/env), `HK_TLS_CERT`,
 `HK_TLS_KEY`; pre-rebrand `FL_*` spellings still work as fallback) <
 CLI flags. A minimal TOML:
 
@@ -97,3 +97,17 @@ the TLS pair is deliberate (fail-closed).
   SCM drains cleanly. NSSM remains a valid fallback.
 - Never bind the console to `0.0.0.0` without TLS — the server logs a loud
   warning when it sees that combination.
+
+### Security posture (audited)
+
+- `__users`, `__groups`, `__hako_rooms` are unreachable over the data
+  plane, even for operators; events streams cap 16 collections and refuse
+  `__*`; backup paths must be absolute without `..`.
+- Room names: `[A-Za-z0-9_-]`, max 64, `__`-prefixed reserved; malformed
+  group policies fail closed. Absent groups stay open (historic) — create
+  a `registered` group per room in production.
+- Sync traffic is plaintext `ws://`: terminate TLS at a reverse proxy
+  (or run the hub on a trusted LAN) and rotate group API keys after any
+  network you don't control sees them.
+- Sessions are keyed by token hash; setup is single-flight (no admin race);
+  admin plane rate-limited 600/min/IP (login keeps its own 5/min).

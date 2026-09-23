@@ -35,6 +35,8 @@ pub struct AppState {
     /// Global per-IP fixed-window limiter (the login endpoint keeps its
     /// own stricter counter in AuthStore).
     pub limits: Arc<RateLimit>,
+    /// Serializes /api/setup: two racing setups must not create two admins.
+    pub setup_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Fixed-window per-IP limiter: N requests per window. Generous by design
@@ -91,6 +93,7 @@ impl AppState {
             sync: None,
             config: None,
             limits: Arc::new(RateLimit::default()),
+            setup_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -168,6 +171,9 @@ async fn setup(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SetupBody>,
 ) -> Response {
+    // Serialize setup process-wide: without this, two racing first-boot
+    // requests both pass the gate below and create two admins.
+    let _guard = state.setup_lock.lock().await;
     if !setup_required(&state.db) {
         return (
             StatusCode::FORBIDDEN,

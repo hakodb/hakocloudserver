@@ -84,13 +84,15 @@ impl AuthStore {
     pub fn insert_session(&self, token: String, sess: Session) {
         self.prune_sessions();
         if let Ok(mut s) = self.sessions.lock() {
-            s.insert(token, sess);
+            s.insert(session_key(&token), sess);
         }
     }
 
     pub fn lookup_session(&self, token: &str) -> Option<Session> {
+        // Sessions are keyed by SHA-256(token): lookup shape is identical
+        // for hit and miss (no `==` on the secret itself — timing oracle).
         let s = self.sessions.lock().ok()?;
-        let sess = s.get(token)?.clone();
+        let sess = s.get(&session_key(token))?.clone();
         if sess.expires_at <= Instant::now() {
             drop(s);
             if let Ok(mut s) = self.sessions.lock() {
@@ -103,7 +105,7 @@ impl AuthStore {
 
     pub fn remove_session(&self, token: &str) {
         if let Ok(mut s) = self.sessions.lock() {
-            s.remove(token);
+            s.remove(&session_key(token));
         }
     }
 
@@ -243,6 +245,12 @@ pub fn token_from_cookie(header: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Session map key = SHA-256(token): identical lookup shape on hit/miss.
+fn session_key(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
 /// Build a `Set-Cookie` value. `secure` flips on with TLS (phase 7); until
