@@ -32,6 +32,54 @@ pub struct AppState {
     pub sync: Option<Arc<hakodb::cloud_sync::CloudSync>>,
     /// Resolved server config snapshot for display (None in tests).
     pub config: Option<crate::config::ServerConfig>,
+    /// Global per-IP fixed-window limiter (the login endpoint keeps its
+    /// own stricter counter in AuthStore).
+    pub limits: Arc<RateLimit>,
+}
+
+/// Fixed-window per-IP limiter: N requests per window. Generous by design
+/// (600/min); login brute-force keeps its own strict counter. Entries for
+/// idle IPs are pruned on access; worst case is one entry per distinct IP
+/// seen within a window.
+#[derive(Default)]
+pub struct RateLimit {
+    hits: std::sync::Mutex<std::collections::HashMap<String, Vec<std::time::Instant>>>,
+}
+
+impl RateLimit {
+    const MAX: usize = 600;
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+    pub fn check(&self, ip: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut hits = match self.hits.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let log = hits.entry(ip.to_string()).or_default();
+        log.retain(|t| now.duration_since(*t) < Self::WINDOW);
+        if log.len() >= Self::MAX {
+            return false;
+        }
+        log.push(now);
+        true
+    }
+}
+
+async fn rate_limit_mw(
+    State(limits): State<Arc<RateLimit>>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    // No connect info (e.g. tests serving without it): share one bucket.
+    let ip = peer.map(|p| p.0.ip().to_string()).unwrap_or_else(|| "unknown".to_string());
+    if limits.check(&ip) {
+        return next.run(req).await;
+    }
+    let mut h = HeaderMap::new();
+    h.insert(header::RETRY_AFTER, "60".parse().unwrap());
+    (StatusCode::TOO_MANY_REQUESTS, h, "rate limit exceeded").into_response()
 }
 
 impl AppState {
@@ -42,6 +90,7 @@ impl AppState {
             secure_cookies,
             sync: None,
             config: None,
+            limits: Arc::new(RateLimit::default()),
         }
     }
 
@@ -674,6 +723,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/events", get(crate::events::events))
         .merge(crate::data::data_routes())
+        // Global per-IP ceiling (login keeps its own stricter counter).
+        // Bodies are capped by axum's default 2 MB request limit.
+        .layer(middleware::from_fn_with_state(
+            state.limits.clone(),
+            rate_limit_mw,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security_headers,

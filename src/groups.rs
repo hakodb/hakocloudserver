@@ -63,20 +63,24 @@ fn get_str(doc: &HakoDoc, field: &str) -> Option<String> {
     }
 }
 
+/// Room names are storage-adjacent (prefixes, doc ids): strict charset +
+/// `__` reservation so a room can never shadow `__users`/`__groups` or
+/// smuggle path separators and unicode confusables.
 fn valid_room_name(name: &str) -> bool {
     let n = name.trim();
-    !n.is_empty() && n.len() <= 64
+    !n.is_empty()
+        && n.len() <= 64
+        && !n.starts_with("__")
+        && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
 pub fn get_group(db: &Hako, room_name: &str) -> Option<GroupView> {
     let doc = db.get(GROUPS_COLLECTION, room_name).ok()??;
-    let mode = doc
-        .get("mode")
-        .and_then(|v| match v {
-            Value::String(s) => GroupMode::parse(s),
-            _ => None,
-        })
-        .unwrap_or(GroupMode::Open);
+    let mode = match doc.get("mode") {
+        Some(Value::String(s)) => GroupMode::parse(s).unwrap_or(GroupMode::Registered),
+        // Malformed policy fails closed (a flipped byte must not open a room).
+        _ => GroupMode::Registered,
+    };
     let members: Vec<String> = match doc.get("members") {
         Some(Value::Array(items)) => items
             .iter()

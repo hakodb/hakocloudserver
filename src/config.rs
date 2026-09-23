@@ -45,6 +45,8 @@ pub struct ConfigLayer {
     pub secure_cookies: Option<bool>,
     pub server_id: Option<String>,
     pub sync_token: Option<String>,
+    /// Read the sync token from this file instead of argv/env (services).
+    pub sync_token_file: Option<String>,
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
 }
@@ -73,6 +75,9 @@ impl ConfigLayer {
         if over.sync_token.is_some() {
             self.sync_token = over.sync_token;
         }
+        if over.sync_token_file.is_some() {
+            self.sync_token_file = over.sync_token_file;
+        }
         if over.tls_cert.is_some() {
             self.tls_cert = over.tls_cert;
         }
@@ -83,6 +88,14 @@ impl ConfigLayer {
     }
 
     fn resolve(self) -> ServerConfig {
+        // Token from file beats nothing but loses to an explicit token:
+        // keeps secrets out of argv/env while staying overridable.
+        let file_token = self
+            .sync_token_file
+            .as_deref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|s| s.lines().next().unwrap_or("").trim().to_string())
+            .filter(|s| !s.is_empty());
         ServerConfig {
             db_path: self.db_path.unwrap_or_else(|| DEFAULT_DB_PATH.into()),
             admin_bind: self
@@ -92,7 +105,7 @@ impl ConfigLayer {
             log_level: self.log_level.unwrap_or_else(|| DEFAULT_LOG_LEVEL.into()),
             secure_cookies: self.secure_cookies.unwrap_or(false),
             server_id: self.server_id.unwrap_or_else(|| DEFAULT_SERVER_ID.into()),
-            sync_token: self.sync_token.unwrap_or_default(),
+            sync_token: self.sync_token.or(file_token).unwrap_or_default(),
             tls_cert: self.tls_cert,
             tls_key: self.tls_key,
         }
@@ -137,6 +150,7 @@ fn env_layer(vars: &HashMap<String, String>) -> ConfigLayer {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true")),
         server_id: get2("HK_SERVER_ID", "FL_SERVER_ID"),
         sync_token: get2("HK_SYNC_TOKEN", "FL_SYNC_TOKEN"),
+        sync_token_file: get2("HK_SYNC_TOKEN_FILE", "FL_SYNC_TOKEN_FILE"),
         tls_cert: get2("HK_TLS_CERT", "FL_TLS_CERT"),
         tls_key: get2("HK_TLS_KEY", "FL_TLS_KEY"),
     }

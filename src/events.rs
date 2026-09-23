@@ -18,7 +18,7 @@ use axum::{
     extract::{Query, State},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse,
+        IntoResponse, Response,
     },
 };
 use serde::Deserialize;
@@ -108,13 +108,34 @@ pub async fn events(
     State(state): State<Arc<AppState>>,
     _user: AuthedUser,
     Query(q): Query<EventsQuery>,
-) -> impl IntoResponse {
+) -> Response {
     let wanted: Option<HashSet<String>> = q.collections.map(|raw| {
         raw.split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect()
     });
+    // Bound the fan-out: one blocking thread per watched collection.
+    if wanted.as_ref().is_some_and(|w| w.len() > 16) {
+        use axum::{http::StatusCode, response::IntoResponse, Json};
+        use serde_json::json;
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "at most 16 collections per events stream"})),
+        )
+            .into_response();
+    }
+    if wanted.as_ref().is_some_and(|w| {
+        w.iter().any(|c| c.split('/').next().is_some_and(|s| s.starts_with("__")))
+    }) {
+        use axum::{http::StatusCode, response::IntoResponse, Json};
+        use serde_json::json;
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "internal collection"})),
+        )
+            .into_response();
+    }
     // Explicitly requested collections are watched verbatim — even ones
     // that don't exist yet (first write creates them and fires). Without
     // the parameter we watch what exists now; collections born later on an
@@ -205,9 +226,11 @@ pub async fn events(
         }
     });
 
-    Sse::new(MpscStream { rx }).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
-    )
+    Sse::new(MpscStream { rx })
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
 }

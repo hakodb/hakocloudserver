@@ -310,12 +310,32 @@ fn build_query(body: &QueryBody) -> Result<FireQuery, String> {
     Ok(q)
 }
 
+/// Internal collections (`__users`, `__groups`, `__hako_rooms`, …) are never
+/// addressable over the admin data plane — even for operators. Credential
+/// and room stores stay out of query/get/put/patch/delete/batch/indexes.
+fn deny_internal(col: &str) -> Option<Response> {
+    if col.split('/').next().is_some_and(|s| s.starts_with("__")) {
+        Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": "internal collection"})),
+            )
+                .into_response(),
+        )
+    } else {
+        None
+    }
+}
+
 async fn query(
     State(state): State<Arc<AppState>>,
     user: AuthedUser,
     Json(body): Json<QueryBody>,
 ) -> Response {
     let _ = user;
+    if let Some(r) = deny_internal(&body.collection) {
+        return r;
+    }
     let q = match build_query(&body) {
         Ok(q) => q,
         Err(e) => {
@@ -346,6 +366,9 @@ async fn get_doc(
     Path((col, id)): Path<(String, String)>,
 ) -> Response {
     let _ = user;
+    if let Some(r) = deny_internal(&col) {
+        return r;
+    }
     match state.db.get(&col, &id) {
         Ok(Some(doc)) => Json(doc_to_json(&id, &doc)).into_response(),
         Ok(None) => (
@@ -375,6 +398,9 @@ async fn put_doc(
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
+    if let Some(r) = deny_internal(&col) {
+        return r;
+    }
     let doc = match doc_from_json(&body.data) {
         Ok(d) => d,
         Err(e) => {
@@ -403,6 +429,9 @@ async fn patch_doc(
 ) -> Response {
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
+    }
+    if let Some(r) = deny_internal(&col) {
+        return r;
     }
     let obj = match body.data.as_object() {
         Some(o) => o,
@@ -444,6 +473,9 @@ async fn delete_doc(
 ) -> Response {
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
+    }
+    if let Some(r) = deny_internal(&col) {
+        return r;
     }
     match state.db.delete(&col, &id) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
@@ -489,6 +521,13 @@ async fn batch(
     }
     let mut ops = Vec::with_capacity(body.mutations.len());
     for m in &body.mutations {
+        if deny_internal(&m.collection).is_some() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": "internal collection"})),
+            )
+                .into_response();
+        }
         match m.op.as_str() {
             "set" => {
                 let data = match m.data.as_ref() {
@@ -584,6 +623,11 @@ async fn list_indexes(
     AxQuery(q): AxQuery<IndexQuery>,
 ) -> Response {
     let _ = user;
+    if let Some(c) = q.collection.as_deref() {
+        if let Some(r) = deny_internal(c) {
+            return r;
+        }
+    }
     Json(json!({ "indexes": state.db.list_indexes(q.collection.as_deref()) })).into_response()
 }
 
@@ -609,6 +653,9 @@ async fn create_index(
 ) -> Response {
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
+    }
+    if let Some(r) = deny_internal(&body.collection) {
+        return r;
     }
     let res: Result<JsonValue, String> = match body.kind.as_str() {
         "simple" => match body.field {
@@ -674,6 +721,22 @@ struct PathBody {
 async fn backup(State(state): State<Arc<AppState>>, user: AuthedUser, Json(body): Json<PathBody>) -> Response {
     if let Err(e) = require_role(&user, Role::Admin) {
         return e;
+    }
+    // Jail the destination: absolute path, no parent escapes. An admin token
+    // must not become an arbitrary file overwrite primitive.
+    if body.path.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "backup path must not contain .."})),
+        )
+            .into_response();
+    }
+    if !std::path::Path::new(&body.path).is_absolute() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "backup path must be absolute"})),
+        )
+            .into_response();
     }
     match state.db.backup(&body.path) {
         Ok(()) => Json(json!({"ok": true})).into_response(),

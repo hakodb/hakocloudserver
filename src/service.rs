@@ -49,8 +49,16 @@ pub mod imp {
             OsString::from(&cfg.server_id),
         ];
         if !cfg.sync_token.is_empty() {
-            args.push(OsString::from("--sync-token"));
-            args.push(OsString::from(&cfg.sync_token));
+            // Never bake the secret into argv (visible via sc qc / tasklist):
+            // persist it beside the DB and point at the file instead.
+            let dir = std::path::Path::new(&cfg.db_path)
+                .parent()
+                .ok_or("--db-path has no parent directory")?;
+            let token_file = dir.join("sync-token.txt");
+            std::fs::write(&token_file, &cfg.sync_token)
+                .map_err(|e| format!("write sync token file: {e}"))?;
+            args.push(OsString::from("--sync-token-file"));
+            args.push(token_file.into_os_string());
         }
         if let (Some(cert), Some(key)) = (&cfg.tls_cert, &cfg.tls_key) {
             args.push(OsString::from("--tls-cert"));
@@ -228,6 +236,11 @@ pub mod imp {
         #[test]
         fn argv_carries_token_and_tls() {
             let mut c = cfg();
+            // Hermetic: token file lands beside this temp db, never in argv.
+            let dir = std::env::temp_dir().join(format!("hakocloud_svc_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            c.db_path = dir.join("hako.db").to_string_lossy().into_owned();
             c.sync_token = "tok".into();
             c.tls_cert = Some("/c.pem".into());
             c.tls_key = Some("/k.pem".into());
@@ -236,9 +249,14 @@ pub mod imp {
                 .into_iter()
                 .map(|s| s.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
-            assert!(a.windows(2).any(|w| w == ["--sync-token", "tok"]));
+            assert!(!a.iter().any(|x| x == "--sync-token"));
+            assert!(!a.iter().any(|x| x == "tok"));
+            let pos = a.iter().position(|x| x == "--sync-token-file").unwrap();
+            let content = std::fs::read_to_string(&a[pos + 1]).unwrap();
+            assert_eq!(content, "tok");
             assert!(a.windows(2).any(|w| w == ["--tls-cert", "/c.pem"]));
             assert!(a.windows(2).any(|w| w == ["--tls-key", "/k.pem"]));
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

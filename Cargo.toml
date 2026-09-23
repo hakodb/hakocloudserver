@@ -10,9 +10,8 @@ name = "hakocloudserver"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to the core branch until the first crates.io release,
-# then switch to `version = "0.8"`.
-hakodb = { git = "https://github.com/hakodb/hakodb.git", branch = "cloud_sync", features = ["cloud-sync"] }
+# Core from crates.io (publishable; sync via the cloud-sync feature).
+hakodb = { version = "0.8.23", default-features = false, features = ["cloud-sync"] }
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

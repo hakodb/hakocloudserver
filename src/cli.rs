@@ -33,6 +33,9 @@ pub struct Cli {
     /// Sync-plane shared token presented by clients.
     #[arg(long)]
     pub sync_token: Option<String>,
+    /// Read the sync token from this file instead of argv (services).
+    #[arg(long)]
+    pub sync_token_file: Option<String>,
     /// TLS certificate PEM for the admin plane (requires --tls-key).
     #[arg(long)]
     pub tls_cert: Option<String>,
@@ -70,6 +73,7 @@ pub fn load_cfg(cli: &Cli) -> Result<ServerConfig, String> {
             secure_cookies: cli.secure_cookies.then_some(true),
             server_id: cli.server_id.clone(),
             sync_token: cli.sync_token.clone(),
+            sync_token_file: cli.sync_token_file.clone(),
             tls_cert: cli.tls_cert.clone(),
             tls_key: cli.tls_key.clone(),
         },
