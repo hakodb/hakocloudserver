@@ -32,11 +32,11 @@ fn put_doc(db: &Hako, col: &str, id: &str) {
     db.flush().ok();
 }
 
-async fn start_server(
-    db: Arc<Hako>,
-    port: u16,
-) -> CloudSync {
-    let sync = CloudSync::server(db, "e2e-server", "");
+async fn start_server(db: Arc<Hako>, port: u16, room: &str) -> CloudSync {
+    // Single-room server: serves exactly `room` (key "k"). Group rows in
+    // the room db still gate admission (absent/open = admit, registered
+    // = API key required); the handshake token itself is not checked.
+    let sync = CloudSync::server(db, "e2e-server", "t", room, "k");
     sync.start(&format!("127.0.0.1:{port}")).await.unwrap();
     sync
 }
@@ -68,7 +68,7 @@ async fn keyed_client_syncs_into_registered_group() {
     let (server_db, sdir) = temp_db("srv");
     let (client_db, cdir) = temp_db("cli");
     let port = free_port();
-    let server = start_server(server_db.clone(), port).await;
+    let server = start_server(server_db.clone(), port, "e2e").await;
 
     let (_, key) = create_group(&server_db, "e2e", GroupMode::Registered, || {
         "e2e-test-key-0123456789abcdef".to_string()
@@ -76,7 +76,8 @@ async fn keyed_client_syncs_into_registered_group() {
     .map(|(v, k)| (v, k.unwrap()))
     .unwrap();
 
-    let client = CloudSync::client(client_db.clone(), "c1", "e2e", "k", "");
+    // Room pair must match the server's; the group API key rides separately.
+    let client = CloudSync::client(client_db.clone(), "c1", "e2e", "k", "t");
     client.set_api_key(Some(key));
     client
         .start(&format!("ws://127.0.0.1:{port}"))
@@ -84,18 +85,14 @@ async fn keyed_client_syncs_into_registered_group() {
         .unwrap();
 
     put_doc(&client_db, "notes", "n1");
+    // Single-room storage: plain collection names, no prefixes.
     wait_for(
         || {
             client_db.flush().ok();
             server_db.get("notes", "n1").ok().flatten().is_some()
-                || server_db
-                    .get("e2e_notes", "n1")
-                    .ok()
-                    .flatten()
-                    .is_some()
         },
         Duration::from_secs(20),
-        "server to receive n1 (any storage layout)",
+        "server to receive n1",
     )
     .await;
 
@@ -110,7 +107,7 @@ async fn keyless_client_rejected_from_registered_group() {
     let (server_db, sdir) = temp_db("srv2");
     let (client_db, cdir) = temp_db("cli2");
     let port = free_port();
-    let server = start_server(server_db.clone(), port).await;
+    let server = start_server(server_db.clone(), port, "e2e").await;
 
     create_group(&server_db, "e2e", GroupMode::Registered, || {
         "e2e-test-key-0123456789abcdef".to_string()
@@ -118,7 +115,7 @@ async fn keyless_client_rejected_from_registered_group() {
     .unwrap();
 
     // No API key presented: handshake must fail closed.
-    let client = CloudSync::client(client_db.clone(), "c2", "e2e", "k", "");
+    let client = CloudSync::client(client_db.clone(), "c2", "e2e", "k", "t");
     client
         .start(&format!("ws://127.0.0.1:{port}"))
         .await
@@ -126,22 +123,26 @@ async fn keyless_client_rejected_from_registered_group() {
     put_doc(&client_db, "notes", "n2");
     client_db.flush().ok();
     tokio::time::sleep(Duration::from_secs(6)).await;
-    assert!(
-        server_db.get("notes", "n2").ok().flatten().is_none()
-            && server_db.get("e2e_notes", "n2").ok().flatten().is_none(),
-        "keyless peer leaked into registered group"
-    );
-    // ...and the server created no room for the rejected peer.
-    assert!(
-        server_db
-            .query(hakodb::query::query::Query::new("__hako_rooms"))
-            .map(|rows| rows.is_empty())
-            .unwrap_or(true),
-        "rejected peer must not create rooms"
-    );
-
+    // Stop the planes first: a later assert panic must not skip the
+    // stops (the rejected client's reconnect loop would hold the
+    // runtime open and hang the binary).
     client.stop();
     server.stop();
+    // The rejected peer's writes created nothing server-side. Collection
+    // check first: `get` on a missing collection materializes its shard,
+    // so a get-then-list order would false-positive here.
+    assert!(
+        server_db
+            .list_collections()
+            .map(|cols| !cols.iter().any(|c| c == "notes"))
+            .unwrap_or(true),
+        "rejected peer must not create collections"
+    );
+    assert!(
+        server_db.get("notes", "n2").ok().flatten().is_none(),
+        "keyless peer leaked into registered group"
+    );
+
     std::fs::remove_dir_all(&sdir).ok();
     std::fs::remove_dir_all(&cdir).ok();
 }
@@ -151,10 +152,10 @@ async fn open_group_admits_anonymous_legacy_client() {
     let (server_db, sdir) = temp_db("srv3");
     let (client_db, cdir) = temp_db("cli3");
     let port = free_port();
-    let server = start_server(server_db.clone(), port).await;
+    let server = start_server(server_db.clone(), port, "openroom").await;
 
-    // No group row at all: historic open behavior.
-    let client = CloudSync::client(client_db.clone(), "c3", "openroom", "k", "");
+    // No group row at all: historic open behavior (absent row admits).
+    let client = CloudSync::client(client_db.clone(), "c3", "openroom", "k", "t");
     client
         .start(&format!("ws://127.0.0.1:{port}"))
         .await
@@ -164,11 +165,6 @@ async fn open_group_admits_anonymous_legacy_client() {
         || {
             client_db.flush().ok();
             server_db.get("notes", "n3").ok().flatten().is_some()
-                || server_db
-                    .get("openroom_notes", "n3")
-                    .ok()
-                    .flatten()
-                    .is_some()
         },
         Duration::from_secs(20),
         "server to receive n3 in open group",

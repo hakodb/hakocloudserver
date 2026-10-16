@@ -2,10 +2,10 @@
 //!
 //! Installs `hakocloudserver` as an SCM-managed service so it runs at
 //! boot without a console session:
-//!   hakocloudserver --db-path C:\data\hako.db --install-service [--service-name NAME]
+//!   hakocloudserver --config C:\data\hako-cloud.toml --install-service [--service-name NAME]
 //!   hakocloudserver --uninstall-service [--service-name NAME]
-//! The installed image runs `... --run-service` with the same operational
-//! flags baked in (services start in System32, so all paths must be
+//! The installed image runs `... --run-service --config <abs path>` with
+//! the same file (services start in System32, so the path must be
 //! absolute — enforced at install). Stop/Shutdown from the SCM drains via
 //! the shared run loop and exits 0.
 
@@ -30,36 +30,23 @@ pub mod imp {
     pub const DEFAULT_SERVICE_NAME: &str = "hakocloudserver";
 
     /// Args baked into the installed image (minus --install-service itself).
-    /// Everything the server needs at boot must be explicit: no CWD, no tty.
-    pub fn service_argv(name: &str, cfg: &ServerConfig) -> Result<Vec<OsString>, String> {
-        if !std::path::Path::new(&cfg.db_path).is_absolute() {
-            return Err("--db-path must be absolute for --install-service".into());
+    /// Everything the server needs at boot comes from one config file:
+    /// rooms, secrets, binds. No CWD, no tty.
+    pub fn service_argv(name: &str, cfg: &ServerConfig, config_path: &str) -> Result<Vec<OsString>, String> {
+        if !std::path::Path::new(config_path).is_absolute() {
+            return Err("--config must be absolute for --install-service".into());
         }
         let mut args = vec![
             OsString::from("--run-service"),
             OsString::from("--service-name"),
             OsString::from(name),
-            OsString::from("--db-path"),
-            OsString::from(&cfg.db_path),
+            OsString::from("--config"),
+            OsString::from(config_path),
             OsString::from("--admin-bind"),
             OsString::from(&cfg.admin_bind),
-            OsString::from("--sync-bind"),
-            OsString::from(&cfg.sync_bind),
             OsString::from("--server-id"),
             OsString::from(&cfg.server_id),
         ];
-        if !cfg.sync_token.is_empty() {
-            // Never bake the secret into argv (visible via sc qc / tasklist):
-            // persist it beside the DB and point at the file instead.
-            let dir = std::path::Path::new(&cfg.db_path)
-                .parent()
-                .ok_or("--db-path has no parent directory")?;
-            let token_file = dir.join("sync-token.txt");
-            std::fs::write(&token_file, &cfg.sync_token)
-                .map_err(|e| format!("write sync token file: {e}"))?;
-            args.push(OsString::from("--sync-token-file"));
-            args.push(token_file.into_os_string());
-        }
         if let (Some(cert), Some(key)) = (&cfg.tls_cert, &cfg.tls_key) {
             args.push(OsString::from("--tls-cert"));
             args.push(OsString::from(cert));
@@ -69,7 +56,7 @@ pub mod imp {
         Ok(args)
     }
 
-    pub fn install(name: &str, cfg: &ServerConfig) -> Result<(), String> {
+    pub fn install(name: &str, cfg: &ServerConfig, config_path: &str) -> Result<(), String> {
         let manager = ServiceManager::local_computer(
             None::<&str>,
             ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -83,7 +70,7 @@ pub mod imp {
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
             executable_path: exe,
-            launch_arguments: service_argv(name, cfg)?,
+            launch_arguments: service_argv(name, cfg, config_path)?,
             dependencies: Vec::<ServiceDependency>::new(),
             account_name: None,
             account_password: None,
@@ -186,25 +173,28 @@ pub mod imp {
 
         fn cfg() -> ServerConfig {
             ServerConfig {
-                db_path: if cfg!(windows) {
-                    r"C:\data\hako.db".into()
-                } else {
-                    "/data/fl.db".into()
-                },
                 admin_bind: "127.0.0.1:8081".into(),
-                sync_bind: "0.0.0.0:8080".into(),
                 log_level: "info".into(),
                 secure_cookies: false,
                 server_id: "hub".into(),
-                sync_token: String::new(),
+                rooms_dir: "/data/rooms".into(),
+                rooms: vec![],
                 tls_cert: None,
                 tls_key: None,
             }
         }
 
+        fn abs_config() -> String {
+            if cfg!(windows) {
+                r"C:\data\hako-cloud.toml".to_string()
+            } else {
+                "/data/hako-cloud.toml".to_string()
+            }
+        }
+
         #[test]
-        fn argv_bakes_name_and_flags() {
-            let a = service_argv("custom", &cfg())
+        fn argv_bakes_name_and_config() {
+            let a = service_argv("custom", &cfg(), &abs_config())
                 .unwrap()
                 .into_iter()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -215,48 +205,31 @@ pub mod imp {
                     "--run-service",
                     "--service-name",
                     "custom",
-                    "--db-path",
-                    if cfg!(windows) {
-                        r"C:\data\hako.db"
-                    } else {
-                        "/data/fl.db"
-                    },
+                    "--config",
+                    abs_config().as_str(),
                 ]
             );
+            // No secrets in argv: rooms carry their own tokens in the file.
             assert!(!a.iter().any(|x| x == "--sync-token"));
         }
 
         #[test]
-        fn argv_rejects_relative_db_path() {
-            let mut c = cfg();
-            c.db_path = "relative/path.db".into();
-            assert!(service_argv("x", &c).is_err());
+        fn argv_rejects_relative_config_path() {
+            assert!(service_argv("x", &cfg(), "relative/hako-cloud.toml").is_err());
         }
 
         #[test]
-        fn argv_carries_token_and_tls() {
+        fn argv_carries_tls() {
             let mut c = cfg();
-            // Hermetic: token file lands beside this temp db, never in argv.
-            let dir = std::env::temp_dir().join(format!("hakocloud_svc_{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            c.db_path = dir.join("hako.db").to_string_lossy().into_owned();
-            c.sync_token = "tok".into();
             c.tls_cert = Some("/c.pem".into());
             c.tls_key = Some("/k.pem".into());
-            let a = service_argv("custom", &c)
+            let a = service_argv("custom", &c, &abs_config())
                 .unwrap()
                 .into_iter()
                 .map(|s| s.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
-            assert!(!a.iter().any(|x| x == "--sync-token"));
-            assert!(!a.iter().any(|x| x == "tok"));
-            let pos = a.iter().position(|x| x == "--sync-token-file").unwrap();
-            let content = std::fs::read_to_string(&a[pos + 1]).unwrap();
-            assert_eq!(content, "tok");
             assert!(a.windows(2).any(|w| w == ["--tls-cert", "/c.pem"]));
             assert!(a.windows(2).any(|w| w == ["--tls-key", "/k.pem"]));
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

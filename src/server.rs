@@ -8,8 +8,6 @@ use std::future::Future;
 
 use crate::app::{build_router, AppState};
 use crate::config::ServerConfig;
-use hakodb::config::HakoConfig;
-use hakodb::engine::Hako;
 
 pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Result<(), String> {
     // try_init: safe to call from console and service paths alike (second
@@ -41,43 +39,49 @@ pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Resul
     }
 
     // Builtin server plane, declared explicitly (never implied by naming):
-    // the room registry, user credentials, and group credentials must not
-    // replicate to clients. The core also excludes these by default; this
-    // declaration keeps the guarantee local to the server crate so it
-    // survives any future change to core defaults. (The pre-rebrand
-    // `__firelite_rooms` alias left core exclusion in 0.8.22 along with the
-    // migration-era dual recognition.) A client naming one of these in a
+    // user credentials and group credentials must not replicate to
+    // clients. The core also excludes these by default; this declaration
+    // keeps the guarantee local to the server crate so it survives any
+    // future change to core defaults. A client naming one of these in a
     // packet is dropped at the ingest choke point and never served,
     // relayed, or tail-broadcast under that name.
-    let mut sync_cfg = HakoConfig::default();
-    sync_cfg.sync_excluded = vec![
-        "__hako_rooms".to_string(),
-        "__users".to_string(),
-        "__groups".to_string(),
-    ];
-    let db = Hako::open(&cfg.db_path, sync_cfg)
-        .map_err(|e| format!("open db {}: {e}", cfg.db_path))?;
-    tracing::info!(db_path = %cfg.db_path, admin_bind = %cfg.admin_bind, sync_bind = %cfg.sync_bind, server_id = %cfg.server_id, "hako-cloudserver starting");
+    let sync_excluded = vec!["__users".to_string(), "__groups".to_string()];
 
-    let db = std::sync::Arc::new(db);
-    let sync = std::sync::Arc::new(hakodb::cloud_sync::CloudSync::server(
-        db.clone(),
-        &cfg.server_id,
-        &cfg.sync_token,
-    ));
-    let sync_bind = cfg.sync_bind.clone();
-    let sync_task = tokio::spawn({
-        let sync = sync.clone();
-        async move {
-            sync.start(&sync_bind)
+    // One independent database + one single-room sync server per declared
+    // room. Rooms never share a handle, so data can never mix across
+    // rooms no matter what the sync plane does.
+    let mut rooms = crate::rooms::open_all(&cfg.rooms_dir, &cfg.rooms, sync_excluded)?;
+    let mut sync_tasks = Vec::new();
+    for decl in &cfg.rooms {
+        let handle = rooms.get_mut(&decl.name).expect("just opened");
+        tracing::info!(room = %decl.name, bind = %decl.sync_bind, "room open");
+        let sync = std::sync::Arc::new(hakodb::cloud_sync::CloudSync::server(
+            handle.db.clone(),
+            &cfg.server_id,
+            &decl.token,
+            &decl.name,
+            &decl.key,
+        ));
+        let bind = decl.sync_bind.clone();
+        let s = sync.clone();
+        sync_tasks.push(tokio::spawn(async move {
+            s.start(&bind)
                 .await
-                .map_err(|e| format!("sync serve {sync_bind}: {e}"))
-        }
-    });
+                .map_err(|e| format!("sync serve {bind}: {e}"))
+        }));
+        handle.sync = Some(sync);
+    }
+    tracing::info!(rooms = rooms.len(), admin_bind = %cfg.admin_bind, server_id = %cfg.server_id, "hako-cloudserver starting");
+
+    // Sync handles for the shutdown arm (the AppState below moves into
+    // the router; stopping goes through these clones instead).
+    let sync_stops: Vec<std::sync::Arc<hakodb::cloud_sync::CloudSync>> = rooms
+        .values()
+        .filter_map(|h| h.sync.clone())
+        .collect();
 
     let state = std::sync::Arc::new(
-        AppState::new(db, cfg.secure_cookies || cfg.tls_enabled())
-            .with_sync(sync.clone())
+        AppState::new(rooms, cfg.secure_cookies || cfg.tls_enabled())
             .with_config(cfg.clone()),
     );
     let app =
@@ -110,17 +114,45 @@ pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Resul
     });
 
     tokio::select! {
-        // Either plane dying takes the process down (fail-fast: the service
+        // Any plane dying takes the process down (fail-fast: the service
         // manager restarts us clean rather than half-serving).
-        joined = async { tokio::join!(admin_task, sync_task) } => {
-            match joined {
-                (Ok(Ok(())), Ok(Ok(()))) => Ok(()),
-                (Ok(Err(e)), _) | (_, Ok(Err(e))) => Err(e),
-                (Err(e), _) | (_, Err(e)) => Err(format!("task panicked: {e}")),
+        joined = async {
+            let mut first_err: Option<String> = None;
+            for t in sync_tasks {
+                match t.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
+                    }
+                    Err(e) => {
+                        if first_err.is_none() {
+                            first_err = Some(format!("task panicked: {e}"));
+                        }
+                    }
+                }
             }
-        }
+            match admin_task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(format!("task panicked: {e}"));
+                    }
+                }
+            }
+            first_err
+        } => match joined {
+            None => Ok(()),
+            Some(e) => Err(e),
+        },
         _ = shutdown => {
-            sync.stop();
+            sync_stops.iter().for_each(|s| s.stop());
             Ok(())
         }
     }

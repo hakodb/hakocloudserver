@@ -26,7 +26,7 @@ async fn health_endpoint_returns_ok_json() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        axum::serve(listener, build_router(Arc::new(AppState::new(Arc::new(db), false))))
+        axum::serve(listener, build_router(Arc::new(AppState::test_single(Arc::new(db)))))
             .await
             .unwrap();
     });
@@ -42,7 +42,7 @@ async fn health_endpoint_returns_ok_json() {
     let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
     let v: serde_json::Value = serde_json::from_str(body).unwrap();
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["collections"], 0);
+    assert_eq!(v["rooms"], serde_json::json!(["testroom"]));
 
     server.abort();
     std::fs::remove_dir_all(&dir).ok();

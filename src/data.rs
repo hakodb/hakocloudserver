@@ -11,16 +11,15 @@ use axum::{
 };
 use hakodb::document::hako_doc::HakoDoc;
 use hakodb::document::value::Value;
-use hakodb::engine::{BatchMutation, Hako};
+use hakodb::engine::BatchMutation;
 use hakodb::index::composite::definition::SortDirection;
 use hakodb::query::filter::Operator;
 use hakodb::query::query::Query as FireQuery;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::app::{require_role, AppState, AuthedUser};
+use crate::app::{require_role, require_room, AppState, AuthedUser};
 use crate::auth::Role;
 
 // ---------------------------------------------------------------------------
@@ -102,30 +101,36 @@ fn doc_from_json(data: &JsonValue) -> Result<HakoDoc, String> {
 #[derive(Debug, Serialize)]
 struct PeerView {
     peer_key: String,
-    prefix: String,
 }
 
 async fn status(State(state): State<Arc<AppState>>, user: AuthedUser) -> Response {
-    let _ = user;
-    let collections = state.db.list_collections().map(|c| c.len()).unwrap_or(0);
-    let sync = state.sync.as_ref().map(|s| {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let db = room.db();
+    let collections = db.list_collections().map(|c| c.len()).unwrap_or(0);
+    // The sync plane reports liveness only: room_key (CloudStatus) is
+    // never serialized — it is the membership credential.
+    let sync = room.sync().map(|s| {
         let peers: Vec<PeerView> = s
             .peer_list()
             .into_iter()
             .map(|p| PeerView {
                 peer_key: p.peer_key,
-                prefix: p.prefix,
             })
             .collect();
+        let st = s.status();
         json!({
-            "connected": s.status().connected,
-            "active_clients": s.status().active_clients,
-            "hosted_rooms": s.status().hosted_rooms,
+            "connected": st.connected,
+            "active_clients": st.active_clients,
+            "room": st.room_name,
             "peers": peers,
         })
     });
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "room": room.name(),
         "collections": collections,
         "sync": sync,
     }))
@@ -134,71 +139,42 @@ async fn status(State(state): State<Arc<AppState>>, user: AuthedUser) -> Respons
 
 #[derive(Debug, Serialize)]
 struct RoomView {
-    room_name: String,
-    prefix: String,
-    created_at: i64,
+    name: String,
+    connected: bool,
+    active_clients: usize,
+    collections: usize,
     peers: Vec<String>,
-    collections: HashMap<String, i64>,
 }
 
-fn room_docs(db: &Hako) -> Vec<(String, HakoDoc)> {
-    db.query(FireQuery::new(hakodb::cloud_sync::INTERNAL_ROOMS_COLLECTION))
-        .unwrap_or_default()
-}
-
-/// Storage prefixes of all known rooms (drives version-clock snapshots).
-pub(crate) fn room_prefixes(db: &Hako) -> Vec<String> {
-    room_docs(db)
-        .iter()
-        .filter_map(|(_, doc)| match doc.get("prefix") {
-            Some(Value::String(s)) => Some(s.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
+/// Rooms the hub serves: one entry per open database. Peers and version
+/// clocks come from each room's own sync plane — no cross-room reads.
 async fn rooms(State(state): State<Arc<AppState>>, user: AuthedUser) -> Response {
-    let _ = user;
-    let peer_prefixes: HashMap<String, Vec<String>> = match state.sync.as_ref() {
-        Some(s) => {
-            let mut map: HashMap<String, Vec<String>> = HashMap::new();
-            for p in s.peer_list() {
-                let client = p.peer_key.split(':').nth(1).unwrap_or("?").to_string();
-                map.entry(p.prefix).or_default().push(client);
-            }
-            map
-        }
-        None => HashMap::new(),
-    };
     let mut out = Vec::new();
-    for (id, doc) in room_docs(&state.db) {
-        let _ = id;
-        let name = match doc.get("room_name") {
-            Some(Value::String(s)) => s.clone(),
-            _ => continue,
-        };
-        let prefix = match doc.get("prefix") {
-            Some(Value::String(s)) => s.clone(),
-            _ => continue,
-        };
-        let created_at = match doc.get("created_at") {
-            Some(Value::Int(t)) => *t,
-            _ => 0,
-        };
-        let collections = match state.sync.as_ref() {
-            Some(s) => s.room_versions(&prefix),
-            None => HashMap::new(),
+    for handle in state.rooms.values() {
+        let collections = handle
+            .db
+            .list_collections()
+            .map(|c| c.len())
+            .unwrap_or(0);
+        let (connected, active_clients, peers) = match handle.sync.as_ref() {
+            Some(s) => {
+                let st = s.status();
+                let peers: Vec<String> =
+                    s.peer_list().into_iter().map(|p| p.peer_key).collect();
+                (st.connected, st.active_clients, peers)
+            }
+            None => (false, 0, Vec::new()),
         };
         out.push(RoomView {
-            peers: peer_prefixes.get(&prefix).cloned().unwrap_or_default(),
-            room_name: name,
-            prefix,
-            created_at,
+            name: handle.name.clone(),
+            connected,
+            active_clients,
             collections,
+            peers,
         });
     }
-    out.sort_by(|a, b| a.room_name.cmp(&b.room_name));
-    Json(json!({ "rooms": out })).into_response()
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(json!({ "rooms": out, "room": user.room })).into_response()
 }
 
 #[derive(Debug, Serialize)]
@@ -208,9 +184,13 @@ struct CollectionView {
 }
 
 async fn collections(State(state): State<Arc<AppState>>, user: AuthedUser) -> Response {
-    let _ = user;
-    let names = state.db.list_collections().unwrap_or_default();
-    let stats = state.db.get_stats();
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let db = room.db();
+    let names = db.list_collections().unwrap_or_default();
+    let stats = db.get_stats();
     let mut out: Vec<CollectionView> = names
         .into_iter()
         .map(|name| {
@@ -332,7 +312,10 @@ async fn query(
     user: AuthedUser,
     Json(body): Json<QueryBody>,
 ) -> Response {
-    let _ = user;
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(r) = deny_internal(&body.collection) {
         return r;
     }
@@ -346,7 +329,7 @@ async fn query(
                 .into_response()
         }
     };
-    match state.db.query(q) {
+    match room.db().query(q) {
         Ok(rows) => {
             let out: Vec<JsonValue> =
                 rows.iter().map(|(id, doc)| doc_to_json(id, doc)).collect();
@@ -365,11 +348,14 @@ async fn get_doc(
     user: AuthedUser,
     Path((col, id)): Path<(String, String)>,
 ) -> Response {
-    let _ = user;
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(r) = deny_internal(&col) {
         return r;
     }
-    match state.db.get(&col, &id) {
+    match room.db().get(&col, &id) {
         Ok(Some(doc)) => Json(doc_to_json(&id, &doc)).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -398,6 +384,10 @@ async fn put_doc(
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(r) = deny_internal(&col) {
         return r;
     }
@@ -411,7 +401,7 @@ async fn put_doc(
                 .into_response()
         }
     };
-    match state.db.put(&col, &id, &doc) {
+    match room.db().put(&col, &id, &doc) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -430,6 +420,10 @@ async fn patch_doc(
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(r) = deny_internal(&col) {
         return r;
     }
@@ -456,7 +450,7 @@ async fn patch_doc(
             }
         }
     }
-    match state.db.patch(&col, &id, updates) {
+    match room.db().patch(&col, &id, updates) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -474,10 +468,14 @@ async fn delete_doc(
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(r) = deny_internal(&col) {
         return r;
     }
-    match state.db.delete(&col, &id) {
+    match room.db().delete(&col, &id) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -512,6 +510,10 @@ async fn batch(
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if body.mutations.len() > 1000 {
         return (
             StatusCode::BAD_REQUEST,
@@ -598,7 +600,7 @@ async fn batch(
             }
         }
     }
-    match state.db.write_batch(ops) {
+    match room.db().write_batch(ops) {
         Ok(ids) => Json(json!({"ok": true, "ids": ids})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -622,13 +624,16 @@ async fn list_indexes(
     user: AuthedUser,
     AxQuery(q): AxQuery<IndexQuery>,
 ) -> Response {
-    let _ = user;
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(c) = q.collection.as_deref() {
         if let Some(r) = deny_internal(c) {
             return r;
         }
     }
-    Json(json!({ "indexes": state.db.list_indexes(q.collection.as_deref()) })).into_response()
+    Json(json!({ "indexes": room.db().list_indexes(q.collection.as_deref()) })).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -654,27 +659,33 @@ async fn create_index(
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if let Some(r) = deny_internal(&body.collection) {
         return r;
     }
-    let res: Result<JsonValue, String> = match body.kind.as_str() {
-        "simple" => match body.field {
-            Some(f) => state
-                .db
+    let db = room.db();
+    let kind = body.kind.as_str();
+    let res: Result<JsonValue, String> = if kind == "simple" {
+        match body.field {
+            Some(f) => db
                 .create_index(&body.collection, &f)
                 .map(|_| json!(true))
                 .map_err(|e| e.to_string()),
             None => Err("field required".to_string()),
-        },
-        "fts" => match body.field {
-            Some(f) => state
-                .db
+        }
+    } else if kind == "fts" {
+        match body.field {
+            Some(f) => db
                 .create_fts_index(&body.collection, &f)
                 .map(|_| json!(true))
                 .map_err(|e| e.to_string()),
             None => Err("field required".to_string()),
-        },
-        "composite" => match body.fields {
+        }
+    } else if kind == "composite" {
+        match body.fields {
             Some(fs) if !fs.is_empty() => {
                 let fields: Vec<(String, SortDirection)> = fs
                     .into_iter()
@@ -689,15 +700,17 @@ async fn create_index(
                         )
                     })
                     .collect();
-                state
-                    .db
-                    .create_composite_index(&body.collection, fields)
+                db.create_composite_index(&body.collection, fields)
                     .map(|id| json!({ "index_id": id }))
                     .map_err(|e| e.to_string())
             }
             _ => Err("fields required".to_string()),
-        },
-        other => Err(format!("unknown kind '{other}' (simple|fts|composite)")),
+        }
+    } else {
+        Err(format!(
+            "unknown kind '{}' (simple|fts|composite)",
+            body.kind
+        ))
     };
     match res {
         Ok(v) => Json(json!({ "ok": true, "result": v })).into_response(),
@@ -722,6 +735,10 @@ async fn backup(State(state): State<Arc<AppState>>, user: AuthedUser, Json(body)
     if let Err(e) = require_role(&user, Role::Admin) {
         return e;
     }
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     // Jail the destination: absolute path, no parent escapes. An admin token
     // must not become an arbitrary file overwrite primitive.
     if body.path.contains("..") {
@@ -738,7 +755,7 @@ async fn backup(State(state): State<Arc<AppState>>, user: AuthedUser, Json(body)
         )
             .into_response();
     }
-    match state.db.backup(&body.path) {
+    match room.db().backup(&body.path) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -752,7 +769,11 @@ async fn compact(State(state): State<Arc<AppState>>, user: AuthedUser) -> Respon
     if let Err(e) = require_role(&user, Role::Admin) {
         return e;
     }
-    match state.db.compact() {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match room.db().compact() {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -775,7 +796,11 @@ async fn vacuum(
     if let Err(e) = require_role(&user, Role::Admin) {
         return e;
     }
-    match state.db.vacuum_collection(&body.collection) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match room.db().vacuum_collection(&body.collection) {
         Ok(n) => Json(json!({"ok": true, "tombstones": n})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -786,15 +811,22 @@ async fn vacuum(
 }
 
 async fn stats(State(state): State<Arc<AppState>>, user: AuthedUser) -> Response {
-    let _ = user;
-    Json(json!({ "stats": state.db.get_stats() })).into_response()
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    Json(json!({ "stats": room.db().get_stats(), "room": room.name() })).into_response()
 }
 
 async fn audit(State(state): State<Arc<AppState>>, user: AuthedUser) -> Response {
     if let Err(e) = require_role(&user, Role::Operator) {
         return e;
     }
-    Json(json!({ "entries": state.db.audit_entries() })).into_response()
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    Json(json!({ "entries": room.db().audit_entries() })).into_response()
 }
 
 pub fn data_routes() -> Router<Arc<crate::app::AppState>> {
