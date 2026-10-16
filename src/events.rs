@@ -5,9 +5,12 @@
 //!      requested collection — admin connections are rare, so no global
 //!      hub; dead receivers are pruned by the engine on next write),
 //!   2. peer membership diffs (polled, peers only change on connect/drop),
-//!   3. per-room version-clock diffs (polled; the version map has no push).
-//! An initial snapshot (peers + versions) is sent first so the UI renders
-//! without waiting for the first change.
+//!   3. version-clock diffs (polled; the version map has no push).
+//!
+//! All three are scoped to the caller's login-bound room: the stream can
+//! never leak another room's writes, peers, or clocks. An initial
+//! snapshot (peers + versions) is sent first so the UI renders without
+//! waiting for the first change.
 //!
 //! Lifecycle without leaks: pumps push into a *bounded* channel and exit
 //! when the send fails (client gone, receiver dropped); the poll loop
@@ -30,8 +33,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::app::{AppState, AuthedUser};
-use crate::data::room_prefixes;
+use crate::app::{require_room, AppState, AuthedUser};
 
 const CHANNEL_DEPTH: usize = 128;
 const PEER_POLL: Duration = Duration::from_secs(2);
@@ -58,26 +60,24 @@ impl futures_core::Stream for MpscStream {
     }
 }
 
-/// Snapshot of peer membership for diffing.
-fn peer_snapshot(state: &AppState) -> HashSet<String> {
-    match state.sync.as_ref() {
+/// Snapshot of room peer membership for diffing (this room's sync plane
+/// only — never another room's).
+fn peer_snapshot(sync: Option<&Arc<hakodb::cloud_sync::CloudSync>>) -> HashSet<String> {
+    match sync {
         Some(s) => s.peer_list().into_iter().map(|p| p.peer_key).collect(),
         None => HashSet::new(),
     }
 }
 
-/// Snapshot of all room version clocks: prefix -> {collection -> version}.
+/// Snapshot of this room's version clock: collection -> version. Single
+/// map (one database, one room); the poll loop diffs it whole.
 fn version_snapshot_synced(
-    state: &AppState,
-    prefixes: &[String],
-) -> HashMap<String, HashMap<String, i64>> {
-    let Some(sync) = state.sync.as_ref() else {
-        return HashMap::new();
-    };
-    prefixes
-        .iter()
-        .map(|p| (p.clone(), sync.room_versions(p)))
-        .collect()
+    sync: Option<&Arc<hakodb::cloud_sync::CloudSync>>,
+) -> HashMap<String, i64> {
+    match sync {
+        Some(s) => s.room_versions(),
+        None => HashMap::new(),
+    }
 }
 
 fn send_event(
@@ -106,9 +106,16 @@ async fn send_event_async(
 
 pub async fn events(
     State(state): State<Arc<AppState>>,
-    _user: AuthedUser,
+    user: AuthedUser,
     Query(q): Query<EventsQuery>,
 ) -> Response {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let room_name = room.name().to_string();
+    let db = room.db().clone();
+    let sync = room.sync().cloned();
     let wanted: Option<HashSet<String>> = q.collections.map(|raw| {
         raw.split(',')
             .map(|s| s.trim().to_string())
@@ -142,8 +149,7 @@ pub async fn events(
     // open-ended stream can't be anticipated.
     let collections: Vec<String> = match wanted {
         Some(w) => w.into_iter().collect(),
-        None => state
-            .db
+        None => db
             .list_collections()
             .unwrap_or_default()
             .into_iter()
@@ -157,7 +163,7 @@ pub async fn events(
     // client goes away (send fails on the dropped receiver).
     for col in collections {
         let tx_pump = tx.clone();
-        let db_pump = state.db.clone();
+        let db_pump = db.clone();
         std::thread::spawn(move || {
             let rx_watch = db_pump.watch_collection(&col);
             while let Ok(ev) = rx_watch.recv() {
@@ -177,16 +183,15 @@ pub async fn events(
     }
 
     // Initial snapshot so the UI renders immediately.
-    let prefixes = room_prefixes(&state.db);
-    let peers_now = peer_snapshot(&state);
-    let versions_now = version_snapshot_synced(&state, &prefixes);
-    let _ = send_event_async(&tx, "peers", json!({ "peers": peers_now.iter().collect::<Vec<_>>() })).await;
-    let _ = send_event_async(&tx, "versions", json!({ "rooms": versions_now })).await;
+    let sync_ref = sync.as_ref();
+    let peers_now = peer_snapshot(sync_ref);
+    let versions_now = version_snapshot_synced(sync_ref);
+    let _ = send_event_async(&tx, "peers", json!({ "room": &room_name, "peers": peers_now.iter().collect::<Vec<_>>() })).await;
+    let _ = send_event_async(&tx, "versions", json!({ "room": &room_name, "versions": versions_now })).await;
 
     // 2+3. Poll loop for peer and version diffs. Ends when the client
     // disconnects (receiver dropped => is_closed).
     let tx_poll = tx.clone();
-    let state_poll = state.clone();
     tokio::spawn(async move {
         let mut last_peers = peers_now;
         let mut last_versions = versions_now;
@@ -201,10 +206,10 @@ pub async fn events(
                     if tx_poll.is_closed() {
                         break;
                     }
-                    let now = peer_snapshot(&state_poll);
+                    let now = peer_snapshot(sync.as_ref());
                     if now != last_peers {
                         last_peers = now.clone();
-                        if !send_event_async(&tx_poll, "peers", json!({ "peers": now.into_iter().collect::<Vec<_>>() })).await {
+                        if !send_event_async(&tx_poll, "peers", json!({ "room": room_name, "peers": now.into_iter().collect::<Vec<_>>() })).await {
                             break;
                         }
                     }
@@ -213,11 +218,10 @@ pub async fn events(
                     if tx_poll.is_closed() {
                         break;
                     }
-                    let prefixes = room_prefixes(&state_poll.db);
-                    let now = version_snapshot_synced(&state_poll, &prefixes);
+                    let now = version_snapshot_synced(sync.as_ref());
                     if now != last_versions {
                         last_versions = now.clone();
-                        if !send_event_async(&tx_poll, "versions", json!({ "rooms": now })).await {
+                        if !send_event_async(&tx_poll, "versions", json!({ "room": room_name, "versions": now })).await {
                             break;
                         }
                     }

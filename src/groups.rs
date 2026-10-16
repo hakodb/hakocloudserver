@@ -66,7 +66,7 @@ fn get_str(doc: &HakoDoc, field: &str) -> Option<String> {
 /// Room names are storage-adjacent (prefixes, doc ids): strict charset +
 /// `__` reservation so a room can never shadow `__users`/`__groups` or
 /// smuggle path separators and unicode confusables.
-fn valid_room_name(name: &str) -> bool {
+pub(crate) fn valid_room_name(name: &str) -> bool {
     let n = name.trim();
     !n.is_empty()
         && n.len() <= 64

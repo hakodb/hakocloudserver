@@ -61,6 +61,9 @@ impl Role {
 pub struct Session {
     pub username: String,
     pub role: Role,
+    /// Room this session is bound to. Every admin call is scoped to it;
+    /// there is no cross-room session (a login names its room).
+    pub room: String,
     pub expires_at: Instant,
 }
 
@@ -289,6 +292,7 @@ mod tests {
             Session {
                 username: "u".into(),
                 role: Role::Admin,
+                room: "testroom".into(),
                 expires_at: Instant::now() + SESSION_TTL,
             },
         );

@@ -131,7 +131,7 @@ async fn call(
 async fn login_cookie(addr: &std::net::SocketAddr, user: &str, pass: &str) -> String {
     // Assumes the account exists; performs a raw login and returns the cookie.
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let body = format!(r#"{{"username":"{user}","password":"{pass}"}}"#);
+    let body = format!(r#"{{"username":"{user}","password":"{pass}","room":"testroom"}}"#);
     let req = format!(
         "POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -176,7 +176,7 @@ async fn spawn(db: Hako) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move {
-        axum::serve(listener, build_router(Arc::new(AppState::new(Arc::new(db), false))))
+        axum::serve(listener, build_router(Arc::new(AppState::test_single(Arc::new(db)))))
             .await
             .unwrap();
     });
@@ -189,7 +189,7 @@ async fn setup_admin(addr: &std::net::SocketAddr) -> String {
     assert_eq!(r.code, 200);
     assert_eq!(r.json["setup_required"], true);
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let body = r#"{"username":"root","password":"root-password"}"#;
+    let body = r#"{"username":"root","password":"root-password","room":"testroom"}"#;
     let req = format!(
         "POST /api/setup HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -291,7 +291,7 @@ async fn user_admin_crud_with_lockout_guards() {
         &addr,
         "POST",
         "/api/users",
-        Some(r#"{"username":"op","password":"operator-pw","role":"operator"}"#),
+        Some(r#"{"username":"op","password":"operator-pw","room":"testroom","role":"operator"}"#),
         Some(&root),
     )
     .await;
@@ -308,7 +308,7 @@ async fn user_admin_crud_with_lockout_guards() {
         &addr,
         "POST",
         "/api/users",
-        Some(r#"{"username":"x","password":"x-password","role":"viewer"}"#),
+        Some(r#"{"username":"x","password":"x-password","room":"testroom","role":"viewer"}"#),
         Some(&op),
     )
     .await;
@@ -327,7 +327,7 @@ async fn user_admin_crud_with_lockout_guards() {
     assert_eq!(r.json["user"]["disabled"], true);
     // Disabled login fails.
     let mut sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
-    let body = r#"{"username":"op","password":"operator-pw"}"#;
+    let body = r#"{"username":"op","password":"operator-pw","room":"testroom"}"#;
     let req = format!(
         "POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),

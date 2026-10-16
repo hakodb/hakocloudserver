@@ -102,7 +102,7 @@ async fn admin_cookie(addr: &std::net::SocketAddr) -> String {
         addr,
         "POST",
         "/api/setup",
-        Some(r#"{"username":"root","password":"root-password"}"#),
+        Some(r#"{"username":"root","password":"root-password","room":"testroom"}"#),
         None,
     )
     .await;
@@ -115,7 +115,7 @@ async fn group_crud_and_key_shown_once() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let srv = tokio::spawn(async move {
-        axum::serve(listener, build_router(Arc::new(AppState::new(Arc::new(db), false))))
+        axum::serve(listener, build_router(Arc::new(AppState::test_single(Arc::new(db)))))
             .await
             .unwrap();
     });
@@ -208,7 +208,7 @@ async fn group_endpoints_require_admin_and_auth() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let srv = tokio::spawn(async move {
-        axum::serve(listener, build_router(Arc::new(AppState::new(Arc::new(db), false))))
+        axum::serve(listener, build_router(Arc::new(AppState::test_single(Arc::new(db)))))
             .await
             .unwrap();
     });
@@ -229,7 +229,7 @@ async fn group_endpoints_require_admin_and_auth() {
         &addr,
         "POST",
         "/api/login",
-        Some(r#"{"username":"op","password":"operator-pw"}"#),
+        Some(r#"{"username":"op","password":"operator-pw","room":"testroom"}"#),
         None,
     )
     .await;
@@ -249,7 +249,7 @@ async fn group_endpoints_require_admin_and_auth() {
         &addr,
         "POST",
         "/api/login",
-        Some(r#"{"username":"root","password":"root-password"}"#),
+        Some(r#"{"username":"root","password":"root-password","room":"testroom"}"#),
         None,
     )
     .await;

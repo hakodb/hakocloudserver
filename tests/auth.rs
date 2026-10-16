@@ -122,7 +122,7 @@ async fn spawn_app(db: Hako) -> (std::net::SocketAddr, tokio::task::JoinHandle<(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move {
-        axum::serve(listener, build_router(Arc::new(AppState::new(Arc::new(db), false))))
+        axum::serve(listener, build_router(Arc::new(AppState::test_single(Arc::new(db)))))
             .await
             .unwrap();
     });
@@ -138,7 +138,7 @@ async fn setup_creates_admin_and_second_setup_forbidden() {
     let r = c
         .post(
             "/api/setup",
-            r#"{"username":"root","password":"s3cret-pw!"}"#,
+            r#"{"username":"root","password":"s3cret-pw!","room":"testroom"}"#,
             None,
         )
         .await;
@@ -158,7 +158,7 @@ async fn setup_creates_admin_and_second_setup_forbidden() {
     let r2 = c3
         .post(
             "/api/setup",
-            r#"{"username":"intruder","password":"s3cret-pw!2"}"#,
+            r#"{"username":"intruder","password":"s3cret-pw!2","room":"testroom"}"#,
             None,
         )
         .await;
@@ -181,7 +181,7 @@ async fn login_logout_and_failures() {
     assert_eq!(
         c.post(
             "/api/login",
-            r#"{"username":"op","password":"nope"}"#,
+            r#"{"username":"op","password":"nope","room":"testroom"}"#,
             None
         )
         .await
@@ -192,7 +192,7 @@ async fn login_logout_and_failures() {
     assert_eq!(
         c.post(
             "/api/login",
-            r#"{"username":"ghost","password":"whatever1"}"#,
+            r#"{"username":"ghost","password":"whatever1","room":"testroom"}"#,
             None
         )
         .await
@@ -205,7 +205,7 @@ async fn login_logout_and_failures() {
     let r = c
         .post(
             "/api/login",
-            r#"{"username":"op","password":"operator-pw"}"#,
+            r#"{"username":"op","password":"operator-pw","room":"testroom"}"#,
             None
         )
         .await;
@@ -236,7 +236,7 @@ async fn disabled_user_cannot_login() {
     assert_eq!(
         c.post(
             "/api/login",
-            r#"{"username":"old","password":"old-password"}"#,
+            r#"{"username":"old","password":"old-password","room":"testroom"}"#,
             None
         )
         .await
@@ -256,7 +256,7 @@ async fn login_rate_limit_trips() {
     for i in 0..6 {
         let mut c = connect(&addr).await;
         let code = c
-            .post("/api/login", r#"{"username":"u","password":"bad"}"#, None)
+            .post("/api/login", r#"{"username":"u","password":"bad","room":"testroom"}"#, None)
             .await
             .code;
         if i < 5 {

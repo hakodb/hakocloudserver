@@ -9,18 +9,18 @@ Type=simple
 # Run as an unprivileged user with a home for nothing but the database dir.
 User=hako
 Group=hako
-# All paths absolute: services have no useful CWD.
+# All paths absolute: services have no useful CWD. Rooms (databases +
+# per-room sync listeners) come from the config file — see README.
 ExecStart=/usr/local/bin/hakocloudserver \
-  --db-path /var/lib/hakocloud/db \
-  --admin-bind 127.0.0.1:8081 \
-  --sync-bind 0.0.0.0:8080
+  --config /etc/hakocloud/hako-cloud.toml \
+  --admin-bind 127.0.0.1:8081
 Environment=RUST_LOG=info
 # If the admin console is exposed beyond loopback, pass TLS material:
 #   --tls-cert /etc/hakocloud/fullchain.pem --tls-key /etc/hakocloud/privkey.pem
 Restart=always
 RestartSec=3
 # Hardening: read-only system, private /tmp, no new privileges. Grant write
-# access to exactly the database directory.
+# access to exactly the rooms directory (and read to the config dir).
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

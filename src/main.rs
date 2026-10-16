@@ -11,8 +11,11 @@ async fn main() -> Result<(), String> {
     {
         use hakocloudserver::service::imp as svc;
         if cli.install_service {
+            let config_path = cli.config.clone().ok_or_else(|| {
+                "--install-service requires --config with an absolute path".to_string()
+            })?;
             let cfg = load_cfg(&cli)?;
-            svc::install(&cli.service_name, &cfg)?;
+            svc::install(&cli.service_name, &cfg, &config_path)?;
             println!("installed service '{}' (starts automatically at boot)", cli.service_name);
             return Ok(());
         }

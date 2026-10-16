@@ -6,8 +6,9 @@ const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-let ME = null; // {username, role}
+let ME = null; // {username, role, room}
 let ES = null; // shared EventSource for the dashboard log
+let ROOMS = []; // room names from /api/setup/status (public)
 
 async function api(path, opts) {
   opts = opts || {};
@@ -52,6 +53,7 @@ async function boot() {
   });
   try {
     const s = await (await fetch('/api/setup/status', { credentials: 'include' })).json();
+    ROOMS = s.rooms || [];
     if (s.setup_required) return showSetup();
   } catch (e) { /* fall through to login attempt */ }
   try {
@@ -62,12 +64,20 @@ async function boot() {
   }
 }
 
+// One session is bound to one room: picking a room means (re-)login.
+// The choice persists across visits; the server still validates the name.
+function roomOptions(selected) {
+  const sel = selected || localStorage.getItem('hako_room') || ROOMS[0] || '';
+  return ROOMS.map((r) => '<option value="' + esc(r) + '"' + (r === sel ? ' selected' : '') + '>' + esc(r) + '</option>').join('');
+}
+
 function showSetup() {
   $('#nav').hidden = true;
   $('#view').innerHTML =
     '<div id="setup-wrap"><h2>First run setup</h2>' +
-    '<p class="muted">No admin exists yet. Create the initial administrator. This page never appears again afterwards.</p>' +
+    '<p class="muted">At least one room has no admin yet. Create the initial administrator in the chosen room. This page never appears again afterwards.</p>' +
     '<form id="f" class="grid">' +
+    '<label>Room</label><select id="r">' + roomOptions() + '</select>' +
     '<label>Username</label><input id="u" autocomplete="username">' +
     '<label>Password</label><input id="p" type="password" autocomplete="new-password">' +
     '<span></span><button class="btn" type="submit">Create admin</button>' +
@@ -75,7 +85,9 @@ function showSetup() {
   $('#f').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     try {
-      ME = await api('/api/setup', { method: 'POST', body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
+      const room = $('#r').value;
+      localStorage.setItem('hako_room', room);
+      ME = await api('/api/setup', { method: 'POST', body: JSON.stringify({ username: $('#u').value, password: $('#p').value, room }) });
       showApp();
     } catch (err) { $('#e').textContent = err.message; }
   });
@@ -86,8 +98,9 @@ function showLogin() {
   $('#nav').hidden = true;
   $('#view').innerHTML =
     '<div id="login-wrap"><h2>HakoDB Console</h2>' +
-    '<p class="muted">Sign in with an admin-console account.</p>' +
+    '<p class="muted">Sign in with an admin-console account. Sessions are bound to one room.</p>' +
     '<form id="f" class="grid">' +
+    '<label>Room</label><select id="r">' + roomOptions(ME && ME.room) + '</select>' +
     '<label>Username</label><input id="u" autocomplete="username">' +
     '<label>Password</label><input id="p" type="password" autocomplete="current-password">' +
     '<span></span><button class="btn" type="submit">Sign in</button>' +
@@ -95,7 +108,9 @@ function showLogin() {
   $('#f').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     try {
-      ME = await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
+      const room = $('#r').value;
+      localStorage.setItem('hako_room', room);
+      ME = await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#u').value, password: $('#p').value, room }) });
       showApp();
     } catch (err) { $('#e').textContent = err.message; }
   });
@@ -103,7 +118,7 @@ function showLogin() {
 
 function showApp() {
   $('#nav').hidden = false;
-  $('#whoami').textContent = ME.username + ' · ' + ME.role;
+  $('#whoami').textContent = ME.username + ' · ' + ME.role + ' · ' + ME.room;
   document.querySelectorAll('nav a').forEach((a) => {
     const adminOnly = a.getAttribute('href') === '#/users';
     a.style.display = (adminOnly && ME.role !== 'admin') ? 'none' : '';
@@ -136,19 +151,19 @@ async function vDashboard(v) {
     const s = await api('/api/status');
     const cards = [
       [s.version, 'version'],
+      [s.room, 'room'],
       [s.collections, 'collections'],
       [s.sync ? s.sync.active_clients : '—', 'sync peers'],
-      [s.sync ? s.sync.hosted_rooms : '—', 'rooms hosted'],
     ];
     c.innerHTML = '<div class="cards">' + cards.map((x) => '<div class="card"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>').join('') + '</div>';
     if (s.sync && s.sync.peers.length) {
-      c.innerHTML += '<h3>Peers</h3>' + table(['peer', 'prefix'], s.sync.peers.map((p) => [mono(p.peer_key), mono(p.prefix)]));
+      c.innerHTML += '<h3>Peers</h3>' + table(['peer'], s.sync.peers.map((p) => [mono(p.peer_key)]));
     }
     const r = await api('/api/rooms');
     if (r.rooms.length) {
-      c.innerHTML += '<h3>Rooms</h3>' + table(
-        ['room', 'prefix', 'peers', 'collections'],
-        r.rooms.map((x) => [esc(x.room_name), mono(x.prefix), esc((x.peers || []).join(', ')), esc(Object.keys(x.collections || {}).length)])
+      c.innerHTML += '<h3>Rooms</h3><p class="muted">This session is bound to <b>' + esc(r.room) + '</b>.</p>' + table(
+        ['room', 'connected', 'peers', 'collections'],
+        r.rooms.map((x) => [esc(x.name), x.connected ? 'yes' : 'no', esc((x.peers || []).join(', ')), esc(x.collections)])
       );
     }
   } catch (e) { c.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }

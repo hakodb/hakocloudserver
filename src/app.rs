@@ -2,7 +2,7 @@
 
 use axum::{
     async_trait,
-    extract::{ConnectInfo, FromRef, FromRequestParts, Path, State},
+    extract::{ConnectInfo, FromRef, FromRequestParts, Path, Query as AxQuery, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -12,6 +12,7 @@ use axum::{
 use hakodb::engine::Hako;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -25,11 +26,11 @@ use crate::groups::{    add_member, create_group, delete_group, get_group, list_
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<Hako>,
+    /// Open rooms by exact name. No default room: handlers resolve
+    /// `?room=` explicitly and 404 unknown names.
+    pub rooms: HashMap<String, crate::rooms::RoomHandle>,
     pub auth: Arc<AuthStore>,
     pub secure_cookies: bool,
-    /// Sync plane handle (None in tests / before boot).
-    pub sync: Option<Arc<hakodb::cloud_sync::CloudSync>>,
     /// Resolved server config snapshot for display (None in tests).
     pub config: Option<crate::config::ServerConfig>,
     /// Global per-IP fixed-window limiter (the login endpoint keeps its
@@ -85,21 +86,38 @@ async fn rate_limit_mw(
 }
 
 impl AppState {
-    pub fn new(db: Arc<Hako>, secure_cookies: bool) -> Self {
+    pub fn new(rooms: HashMap<String, crate::rooms::RoomHandle>, secure_cookies: bool) -> Self {
         Self {
-            db,
+            rooms,
             auth: Arc::new(AuthStore::default()),
             secure_cookies,
-            sync: None,
             config: None,
             limits: Arc::new(RateLimit::default()),
             setup_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    pub fn with_sync(mut self, sync: Arc<hakodb::cloud_sync::CloudSync>) -> Self {
-        self.sync = Some(sync);
-        self
+    /// Single-room state for integration tests (sync plane off).
+    pub fn test_single(db: Arc<Hako>) -> Self {
+        Self::new(
+            HashMap::from([(
+                "testroom".to_string(),
+                crate::rooms::RoomHandle {
+                    name: "testroom".to_string(),
+                    id: "testroom".to_string(),
+                    db,
+                    sync: None,
+                },
+            )]),
+            false,
+        )
+    }
+
+    /// Resolve `?room=` to its handle. Missing or unknown room is a
+    /// caller error, never a default: a silent default would route admin
+    /// writes somewhere the operator did not choose.
+    pub fn room(&self, name: &str) -> Option<RoomHandleRef<'_>> {
+        self.rooms.get(name).map(|h| RoomHandleRef { handle: h })
     }
 
     pub fn with_config(mut self, config: crate::config::ServerConfig) -> Self {
@@ -108,11 +126,69 @@ impl AppState {
     }
 }
 
+/// Borrowed room view for handlers: database + optional sync plane.
+pub struct RoomHandleRef<'a> {
+    handle: &'a crate::rooms::RoomHandle,
+}
+
+impl<'a> RoomHandleRef<'a> {
+    pub fn db(&self) -> &Arc<Hako> {
+        &self.handle.db
+    }
+
+    pub fn sync(&self) -> Option<&Arc<hakodb::cloud_sync::CloudSync>> {
+        self.handle.sync.as_ref()
+    }
+
+    pub fn name(&self) -> &str {
+        &self.handle.name
+    }
+}
+
+/// Resolve the caller's login-bound room. A session whose room is gone
+/// (operator removed it and restarted) fails closed with 404 — never
+/// falls back to another room.
+pub(crate) fn require_room<'a>(
+    state: &'a AppState,
+    user: &'a AuthedUser,
+) -> Result<RoomHandleRef<'a>, Response> {
+    state.room(&user.room).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown room"})),
+        )
+            .into_response()
+    })
+}
+
+/// Resolve a room by explicit name (public endpoints: setup/login take
+/// the room in the body). Same fail-closed rule, 400 here: the caller
+/// named something that is not a room.
+fn require_named_room<'a>(state: &'a AppState, name: &'a str) -> Result<RoomHandleRef<'a>, Response> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "room required"})),
+        )
+            .into_response());
+    }
+    state.room(name).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "unknown room"})),
+        )
+            .into_response()
+    })
+}
+
 /// Authenticated caller, extracted from the session cookie. Rejects with
-/// 401 when missing, unknown, or expired.
+/// 401 when missing, unknown, or expired. Carries the login-bound room:
+/// every handler scopes to it, so one session can never touch two rooms.
 pub struct AuthedUser {
     pub username: String,
     pub role: Role,
+    pub room: String,
 }
 
 #[async_trait]
@@ -142,6 +218,7 @@ where
             .map(|s| AuthedUser {
                 username: s.username,
                 role: s.role,
+                room: s.room,
             })
             .ok_or_else(err)
     }
@@ -150,11 +227,15 @@ where
 // `Arc<AppState>: FromRef<S>` needs this import path to resolve.
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let collections = state.db.list_collections().map(|c| c.len()).unwrap_or(0);
+    // Public probe: room names only. Secrets, binds, and counts stay
+    // behind auth; names are needed pre-login for the room picker and
+    // are handshake-visible on the sync plane anyway.
+    let mut rooms: Vec<&str> = state.rooms.keys().map(|s| s.as_str()).collect();
+    rooms.sort();
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-        "collections": collections,
+        "rooms": rooms,
     }))
 }
 
@@ -162,6 +243,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 struct SetupBody {
     username: String,
     password: String,
+    room: String,
 }
 
 /// First-run bootstrap: creates the initial admin. Open only while no
@@ -174,7 +256,11 @@ async fn setup(
     // Serialize setup process-wide: without this, two racing first-boot
     // requests both pass the gate below and create two admins.
     let _guard = state.setup_lock.lock().await;
-    if !setup_required(&state.db) {
+    let room = match require_named_room(&state, &body.room) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    if !setup_required(room.db()) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error": "server already initialized"})),
@@ -191,7 +277,7 @@ async fn setup(
     // Re-check after validation to narrow the TOCTOU window (single-node
     // server: two racing setups both pass the first check, but the second
     // write just overwrites the same admin row — no privilege split).
-    if let Err(e) = upsert_user(&state.db, body.username.trim(), &body.password, Role::Admin, false)
+    if let Err(e) = upsert_user(room.db(), body.username.trim(), &body.password, Role::Admin, false)
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -199,13 +285,14 @@ async fn setup(
         )
             .into_response();
     }
-    issue_session(&state, body.username.trim(), Role::Admin).into_response()
+    issue_session(&state, room.name(), body.username.trim(), Role::Admin).into_response()
 }
 
 #[derive(Debug, Deserialize)]
 struct LoginBody {
     username: String,
     password: String,
+    room: String,
 }
 
 fn client_ip(parts_ip: Option<ConnectInfo<SocketAddr>>) -> String {
@@ -227,15 +314,21 @@ async fn login(
         )
             .into_response();
     }
+    let room = match require_named_room(&state, &body.room) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
     // Generic failure for missing/disabled/wrong — no user enumeration.
-    let ok = match load_user(&state.db, body.username.trim()) {
+    // Room names are public (health lists them), so 400-vs-401 leaks
+    // nothing beyond what the picker already shows.
+    let ok = match load_user(room.db(), body.username.trim()) {
         Some((hash, role, disabled)) if !disabled && verify_password(&body.password, &hash) => {
             Some(role)
         }
         _ => None,
     };
     match ok {
-        Some(role) => issue_session(&state, body.username.trim(), role).into_response(),
+        Some(role) => issue_session(&state, room.name(), body.username.trim(), role).into_response(),
         None => {
             state.auth.record_failure(&ip_str);
             // Hash once to flatten timing between known/unknown users.
@@ -249,14 +342,21 @@ async fn login(
     }
 }
 
-/// Create session + Set-Cookie header + caller identity body.
-fn issue_session(state: &Arc<AppState>, username: &str, role: Role) -> (StatusCode, HeaderMap, Json<Value>) {
+/// Create session + Set-Cookie header + caller identity body. The session
+/// is bound to `room`: every later call with this cookie scopes to it.
+fn issue_session(
+    state: &Arc<AppState>,
+    room: &str,
+    username: &str,
+    role: Role,
+) -> (StatusCode, HeaderMap, Json<Value>) {
     let token = new_session_token();
     state.auth.insert_session(
         token.clone(),
         Session {
             username: username.to_string(),
             role,
+            room: room.to_string(),
             expires_at: std::time::Instant::now() + SESSION_TTL,
         },
     );
@@ -275,7 +375,7 @@ fn issue_session(state: &Arc<AppState>, username: &str, role: Role) -> (StatusCo
     (
         StatusCode::OK,
         headers,
-        Json(json!({"username": username, "role": role_str})),
+        Json(json!({"username": username, "role": role_str, "room": room})),
     )
 }
 
@@ -301,20 +401,48 @@ async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
 struct MeBody {
     username: String,
     role: Role,
+    room: String,
 }
 
 async fn me(user: AuthedUser) -> Json<MeBody> {
     Json(MeBody {
         username: user.username,
         role: user.role,
+        room: user.room,
     })
 }
 
-/// Public probe driving the setup wizard: true only while no enabled
-/// admin exists. No auth (it must work before any account exists); reveals
-/// nothing beyond a single bit.
-async fn setup_status(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(json!({ "setup_required": setup_required(&state.db) }))
+/// Public probe driving the setup wizard: per-room bit + the room list
+/// the picker needs. `?room=` optional; without it `setup_required`
+/// covers the whole hub (true when ANY room still needs its admin).
+/// Reveals nothing beyond one bit plus public room names.
+#[derive(Debug, Deserialize, Default)]
+struct SetupStatusQuery {
+    #[serde(default)]
+    room: Option<String>,
+}
+
+async fn setup_status(
+    State(state): State<Arc<AppState>>,
+    AxQuery(q): AxQuery<SetupStatusQuery>,
+) -> Response {
+    let mut rooms: Vec<&str> = state.rooms.keys().map(|s| s.as_str()).collect();
+    rooms.sort();
+    let needed = |db: &Hako| setup_required(db);
+    let setup_required = match q.room.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => match state.room(name) {
+            Some(r) => needed(r.db()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "unknown room"})),
+                )
+                    .into_response()
+            }
+        },
+        _ => state.rooms.values().any(|h| needed(&h.db)),
+    };
+    Json(json!({ "setup_required": setup_required, "rooms": rooms })).into_response()
 }
 
 /// Non-sensitive server facts for the console config view. The sync token
@@ -331,11 +459,28 @@ async fn config_view(State(state): State<Arc<AppState>>, user: AuthedUser) -> Re
         ),
         None => ("unknown".into(), "unknown".into(), "unknown".into()),
     };
+    // Room names + sync binds only: tokens/keys never leave the server.
+    let mut rooms: Vec<Value> = state
+        .rooms
+        .values()
+        .map(|h| {
+            let bind = state
+                .config
+                .as_ref()
+                .and_then(|c| c.rooms.iter().find(|r| r.name == h.name))
+                .map(|r| r.sync_bind.clone())
+                .unwrap_or_default();
+            json!({"name": h.name, "sync_bind": bind})
+        })
+        .collect();
+    rooms.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "admin_bind": admin_bind,
         "log_level": log_level,
         "server_id": server_id,
+        "room": user.room,
+        "rooms": rooms,
     }))
     .into_response()
 }
@@ -415,7 +560,11 @@ async fn list_users_route(
     if let Err(e) = require_role(&user, Role::Admin) {
         return e;
     }
-    Json(json!({ "users": crate::users::list_users(&state.db) })).into_response()
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    Json(json!({ "users": crate::users::list_users(room.db()) })).into_response()
 }
 
 async fn create_user_route(
@@ -430,7 +579,11 @@ async fn create_user_route(
         Ok(r) => r,
         Err(e) => return e,
     };
-    match crate::users::create_user(&state.db, body.username.trim(), &body.password, role) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match crate::users::create_user(room.db(), body.username.trim(), &body.password, role) {
         Ok(u) => (StatusCode::CREATED, Json(json!({ "user": u }))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -463,8 +616,12 @@ async fn update_user_route(
         },
         None => None,
     };
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     match crate::users::update_user(
-        &state.db,
+        room.db(),
         &user.username,
         &name,
         role,
@@ -488,7 +645,11 @@ async fn delete_user_route(
     if let Err(e) = require_role(&user, Role::Admin) {
         return e;
     }
-    match crate::users::delete_user(&state.db, &user.username, &name) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match crate::users::delete_user(room.db(), &user.username, &name) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -528,7 +689,11 @@ async fn create_group_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match create_group(&state.db, body.room_name.trim(), body.mode, new_session_token) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match create_group(room.db(), body.room_name.trim(), body.mode, new_session_token) {
         Ok((view, key)) => (
             StatusCode::CREATED,
             Json(json!({"group": view, "api_key": key})),
@@ -549,7 +714,11 @@ async fn list_groups_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    Json(json!({"groups": list_groups(&state.db)})).into_response()
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    Json(json!({"groups": list_groups(room.db())})).into_response()
 }
 
 async fn get_group_route(
@@ -560,7 +729,11 @@ async fn get_group_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match get_group(&state.db, &name) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match get_group(room.db(), &name) {
         Some(g) => Json(json!({"group": g})).into_response(),
         None => (
             StatusCode::NOT_FOUND,
@@ -578,7 +751,11 @@ async fn rotate_key_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match rotate_group_key(&state.db, &name, new_session_token) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match rotate_group_key(room.db(), &name, new_session_token) {
         Ok(key) => Json(json!({"api_key": key})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -602,7 +779,11 @@ async fn set_mode_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match set_group_mode(&state.db, &name, body.mode) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match set_group_mode(room.db(), &name, body.mode) {
         Ok(g) => Json(json!({"group": g})).into_response(),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -626,7 +807,11 @@ async fn add_member_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match add_member(&state.db, &name, &body.client_id) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match add_member(room.db(), &name, &body.client_id) {
         Ok(g) => Json(json!({"group": g})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -644,7 +829,11 @@ async fn remove_member_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match remove_member(&state.db, &name, &client_id) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match remove_member(room.db(), &name, &client_id) {
         Ok(g) => Json(json!({"group": g})).into_response(),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -662,7 +851,11 @@ async fn delete_group_route(
     if let Err(e) = require_admin(&user) {
         return e;
     }
-    match delete_group(&state.db, &name) {
+    let room = match require_room(&state, &user) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match delete_group(room.db(), &name) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => (
             StatusCode::NOT_FOUND,

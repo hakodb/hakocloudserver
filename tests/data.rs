@@ -86,7 +86,7 @@ async fn call(
 
 async fn login_cookie(addr: &std::net::SocketAddr, user: &str, pass: &str) -> String {
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let body = format!(r#"{{"username":"{user}","password":"{pass}"}}"#);
+    let body = format!(r#"{{"username":"{user}","password":"{pass}","room":"testroom"}}"#);
     let req = format!(
         "POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -131,7 +131,7 @@ async fn spawn(db: Hako) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let h = tokio::spawn(async move {
-        axum::serve(listener, build_router(Arc::new(AppState::new(Arc::new(db), false))))
+        axum::serve(listener, build_router(Arc::new(AppState::test_single(Arc::new(db)))))
             .await
             .unwrap();
     });
