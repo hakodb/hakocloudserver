@@ -54,6 +54,8 @@ async fn remote_hub_probe() {
     println!("cloud_probe: {me} joining room {room} via {url}");
 
     // client -> hub marker (verified hub-side through the admin console).
+    // Own collection: same-collection version ties (client 1 == hub 1)
+    // block the hub's catch-up pull; separate collections stay untied.
     let mut doc = HakoDoc::default();
     doc.insert("from", Value::String(me.clone()));
     doc.insert(
@@ -65,7 +67,7 @@ async fn remote_hub_probe() {
                 .unwrap_or(0),
         ),
     );
-    db.put("probe", &format!("{me}-here"), &doc).unwrap();
+    db.put("marker", &format!("{me}-here"), &doc).unwrap();
     db.flush().ok();
 
     // hub -> client: wait for the doc the operator wrote hub-side.
