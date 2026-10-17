@@ -22,7 +22,11 @@ use hakodb::document::value::Value;
 use hakodb::engine::Hako;
 
 #[derive(Parser, Debug)]
+#[allow(dead_code)]
 struct Args {
+    /// pull or push.
+    #[arg(default_value = "pull")]
+    mode: String,
     /// Hub sync endpoint (room's sync bind), ws://host:port.
     #[arg(long)]
     url: String,
