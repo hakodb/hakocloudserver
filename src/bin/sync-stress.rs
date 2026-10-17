@@ -42,9 +42,6 @@ struct Args {
     /// Peer id label (default stress-<pid>).
     #[arg(long)]
     id: Option<String>,
-    /// pull or push.
-    #[arg(long, default_value = "pull")]
-    mode: String,
     /// pull: count only these collections (comma list; default: all non-__).
     #[arg(long)]
     collections: Option<String>,
