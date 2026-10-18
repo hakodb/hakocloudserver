@@ -34,6 +34,11 @@ pub struct RoomHandle {
     pub id: String,
     pub db: Arc<Hako>,
     pub sync: Option<Arc<hakodb::cloud_sync::CloudSync>>,
+    /// Engine-to-engine mesh leg (replica rooms dial the writer; optional
+    /// listener rooms serve as dial targets). Wired by server.rs.
+    pub mesh: Option<Arc<hakodb::net_sync::NetSyncer>>,
+    /// True when opened as a mesh replica (engine fence engaged).
+    pub read_only: bool,
 }
 
 /// Open every declared room. Fail-closed as a unit: a bad declaration
@@ -68,6 +73,12 @@ pub fn open_all(
             )
             .map_err(|e| format!("room `{}` open: {e}", decl.name))?,
         );
+        if decl.read_only {
+            // Fence FIRST: no snapshot of this engine is ever writable by
+            // data-plane code — every write path rejects loudly. State
+            // arrives exclusively via the mesh tailer from the writer pod.
+            db.set_read_only(true);
+        }
         out.insert(
             decl.name.clone(),
             RoomHandle {
@@ -75,6 +86,8 @@ pub fn open_all(
                 id,
                 db,
                 sync: None,
+                mesh: None,
+                read_only: decl.read_only,
             },
         );
     }
@@ -118,12 +131,14 @@ mod tests {
                 key: "k1".into(),
                 token: "t".into(),
                 sync_bind: "127.0.0.1:0".into(),
+                ..Default::default()
             },
             RoomDecl {
                 name: "beta".into(),
                 key: "k2".into(),
                 token: "t".into(),
                 sync_bind: "127.0.0.1:0".into(),
+                ..Default::default()
             },
         ];
         // Same key material shape, different names: two opaque, disjoint

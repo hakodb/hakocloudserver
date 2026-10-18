@@ -107,6 +107,8 @@ impl AppState {
                     id: "testroom".to_string(),
                     db,
                     sync: None,
+                    mesh: None,
+                    read_only: false,
                 },
             )]),
             false,
