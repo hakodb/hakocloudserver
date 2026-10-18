@@ -231,13 +231,32 @@ where
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     // Public probe: room names only. Secrets, binds, and counts stay
     // behind auth; names are needed pre-login for the room picker and
-    // are handshake-visible on the sync plane anyway.
-    let mut rooms: Vec<&str> = state.rooms.keys().map(|s| s.as_str()).collect();
+    // are handshake-visible on the sync plane anyway. Mesh legs also
+    // publish their plumbing state (#74): role + last static-dial
+    // outcome per peer, so a k8s readiness probe can see a replica
+    // reach (or fail to reach) its writer without scraping stderr logs.
+    let mut rooms: Vec<String> = state.rooms.keys().cloned().collect();
     rooms.sort();
+    let mut mesh: Vec<Value> = Vec::new();
+    for name in rooms.iter() {
+        let h = state.rooms.get(name).expect("name from keys");
+        if let Some(m) = &h.mesh {
+            let role = if h.read_only { "replica" } else { "writer" };
+            let peers: Vec<Value> = m
+                .mesh_dial_status()
+                .into_iter()
+                .map(|(addr, outcome, last_ms)| {
+                    json!({"addr": addr, "outcome": outcome, "last_ms": last_ms})
+                })
+                .collect();
+            mesh.push(json!({"room": name, "role": role, "peers": peers}));
+        }
+    }
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "rooms": rooms,
+        "mesh": mesh,
     }))
 }
 
