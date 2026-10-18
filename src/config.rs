@@ -51,6 +51,22 @@ pub struct RoomDecl {
     /// port — one listener per room, no dispatcher).
     /// Example: `"0.0.0.0:8080"`.
     pub sync_bind: String,
+    /// Mesh replica: open this room's database read-only (#74). Inbound
+    /// client writes are rejected loudly at the engine fence; the room's
+    /// state arrives via the mesh from the writer pod's engine. Requires
+    /// `mesh_peers` (a read-only room with no peer feeding it would stay
+    /// silently empty — fail-closed instead).
+    pub read_only: bool,
+    /// Engine-to-engine mesh listener for this room, e.g. `"0.0.0.0:9101"`.
+    /// The writer pod exposes this so replica pods can dial in; a mesh
+    /// bind without roles is optional (provider-only is enough for the
+    /// writer, replicas usually omit it).
+    pub mesh_bind: Option<String>,
+    /// Static mesh peers to dial, e.g. `["tcp://hako-writer-0:9101"]` —
+    /// the replica pulls the writer's WAL through these. Discovery
+    /// (mDNS/broadcast) is off for mesh-wired rooms: container networks
+    /// don't carry multicast; static lists are the deployment contract.
+    pub mesh_peers: Vec<String>,
 }
 
 /// Partial file/env/flag layer. Every field optional; `None` inherits.
@@ -118,11 +134,58 @@ fn resolve_rooms(value: &toml::Value) -> Result<Vec<RoomDecl>, String> {
         if !binds.insert(bind) {
             return Err(format!("duplicate sync_bind {bind} (one listener per room)"));
         }
+        let read_only = match item.get("read_only") {
+            Some(v) => v
+                .as_bool()
+                .ok_or_else(|| format!("{tag} ({name}): read_only must be true/false"))?,
+            None => false,
+        };
+        let mesh_bind = match get("mesh_bind") {
+            b if b.is_empty() => None,
+            b => Some(
+                b.parse::<std::net::SocketAddr>()
+                    .map_err(|_| format!("{tag} ({name}): mesh_bind must be a valid socket address"))?
+                    .to_string(),
+            ),
+        };
+        let mesh_peers: Vec<String> = match item.get("mesh_peers") {
+            Some(v) => v
+                .as_array()
+                .ok_or_else(|| format!("{tag} ({name}): mesh_peers must be an array of tcp://addr strings"))?
+                .iter()
+                .map(|p| {
+                    let s = p.as_str().unwrap_or("").trim().to_string();
+                    let host_port = s
+                        .strip_prefix("tcp://")
+                        .ok_or_else(|| format!("{tag} ({name}): mesh peer `{s}` must start with tcp://"))?;
+                    // Validate up-front: a typo becomes a silent empty room
+                    // otherwise (the dialer just keeps retrying).
+                    host_port
+                        .parse::<std::net::SocketAddr>()
+                        .map(|_| s.clone())
+                        .map_err(|_| format!("{tag} ({name}): mesh peer `{s}` must be an address (host:port)"))
+                })
+                .collect::<Result<Vec<String>, String>>()?,
+            None => Vec::new(),
+        };
+        if read_only && mesh_peers.is_empty() {
+            return Err(format!(
+                "{tag} ({name}): read_only room without mesh_peers would stay silently empty — declare at least one writer peer"
+            ));
+        }
+        if read_only && mesh_bind.is_some() {
+            return Err(format!(
+                "{tag} ({name}): read_only room must not expose mesh_bind (replicas dial, they are not dialed)"
+            ));
+        }
         out.push(RoomDecl {
             name,
             key,
             token,
             sync_bind: bind.to_string(),
+            read_only,
+            mesh_bind,
+            mesh_peers,
         });
     }
     Ok(out)

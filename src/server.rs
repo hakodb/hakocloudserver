@@ -50,8 +50,54 @@ pub async fn run(cfg: ServerConfig, shutdown: impl Future<Output = ()>) -> Resul
     // One independent database + one single-room sync server per declared
     // room. Rooms never share a handle, so data can never mix across
     // rooms no matter what the sync plane does.
-    let mut rooms = crate::rooms::open_all(&cfg.rooms_dir, &cfg.rooms, sync_excluded)?;
+    let mut rooms = crate::rooms::open_all(&cfg.rooms_dir, &cfg.rooms, sync_excluded.clone())?;
     let mut sync_tasks = Vec::new();
+    // Mesh leg: replicas dial the declared writer peers (static list —
+    // container networks carry no multicast); rooms with a mesh_bind also
+    // serve as dial targets for future replicas. Discovery is Off for
+    // wired rooms: the address list IS the membership contract (#74).
+    let mesh_role: Vec<&crate::config::RoomDecl> = cfg
+        .rooms
+        .iter()
+        .filter(|d| d.mesh_bind.is_some() || !d.mesh_peers.is_empty())
+        .collect();
+    for decl in &mesh_role {
+        let handle = rooms.get_mut(&decl.name).expect("just opened");
+        let bind_port = match &decl.mesh_bind {
+            Some(b) => b
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| format!("room `{}` mesh_bind {b}: {e}", decl.name))?
+                .port(),
+            None => 0,
+        };
+        let node_id = format!("{}-{}-{}", cfg.server_id, decl.name, if decl.read_only { "ro" } else { "w" });
+        let mesh = hakodb::net_sync::NetSyncer::new(
+            handle.db.clone(),
+            &node_id,
+            &decl.key,
+            sync_excluded.iter().map(|s| s.to_string()).collect(),
+        )
+        .with_discovery(hakodb::net_sync::DiscoveryMode::Off)
+        .with_static_peers(decl.mesh_peers.clone());
+        // Always start the mesh leg even without a listener: start() is
+        // what spawns the static-peer dial tasks and the WAL tail bridge —
+        // a replica (no mesh_bind) still must dial the writer. Port 0
+        // binds a throwaway listener in that case; discovery is Off so it
+        // announces nothing.
+        let m = mesh.clone();
+        let rm = decl.name.clone();
+        let bind_label = decl.mesh_bind.clone().unwrap_or_else(|| "<ephemeral>".to_string());
+        tracing::info!(room = %decl.name, bind = %bind_label, role = if decl.read_only { "replica" } else { "writer" }, "mesh plane open");
+        sync_tasks.push(tokio::spawn(async move {
+            m.start(bind_port)
+                .await
+                .map_err(|e| format!("mesh serve {rm} on {bind_label}: {e}"))
+        }));
+        if !decl.mesh_peers.is_empty() {
+            tracing::info!(room = %decl.name, peers = ?decl.mesh_peers, "mesh replica dialing writer");
+        }
+        handle.mesh = Some(std::sync::Arc::new(mesh));
+    }
     for decl in &cfg.rooms {
         let handle = rooms.get_mut(&decl.name).expect("just opened");
         tracing::info!(room = %decl.name, bind = %decl.sync_bind, "room open");
