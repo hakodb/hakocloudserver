@@ -1,6 +1,6 @@
 [package]
 name = "hakocloudserver"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Standalone HakoDB cloud-sync server with admin console"
 license = "MIT"
@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core from crates.io (publishable; sync via the cloud-sync feature).
-hakodb = { version = "0.20.0", default-features = false, features = ["cloud-sync", "net-sync"] }
+hakodb = { version = "0.20.1", default-features = false, features = ["cloud-sync", "net-sync"] }
 
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
