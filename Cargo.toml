@@ -1,6 +1,6 @@
 [package]
 name = "hakocloudserver"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Standalone HakoDB cloud-sync server with admin console"
 license = "MIT"
